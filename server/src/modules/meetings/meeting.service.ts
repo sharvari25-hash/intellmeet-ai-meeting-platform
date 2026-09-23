@@ -10,6 +10,11 @@ import {
 import { DEFAULT_TTL_SEC, cacheDel, cacheKeys, cached } from '../../lib/cache.js';
 import { AppError } from '../../lib/errors.js';
 import { generateCode } from '../../lib/ids.js';
+import { MeetingInsight } from '../ai/insight.model.js';
+import { Message } from '../chat/message.model.js';
+import { Notification } from '../notifications/notification.model.js';
+import { Transcript } from '../ai/transcript.model.js';
+import { deleteLocalRecording } from '../recordings/recording.storage.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
 import { Meeting, type MeetingDocument } from './meeting.model.js';
@@ -355,8 +360,42 @@ export async function deleteMeeting(meetingId: string, userId: string): Promise<
     throw AppError.conflict('End the meeting before deleting it');
   }
 
+  await deleteMeetingArtifacts([meeting]);
   await meeting.deleteOne();
   await invalidateMeeting(meeting);
+}
+
+/**
+ * Removes everything that hangs off these meetings: chat, transcripts,
+ * insights, notifications that link to them, and locally stored recordings.
+ *
+ * Shared by host deletion and the demo cleanup, so neither can forget a
+ * collection that a later phase adds. A notification pointing at a deleted
+ * meeting would open "Meeting not found", so those go too. Cloudinary assets
+ * are left alone - the API secret is needed to delete them, and an orphaned
+ * file costs nothing until the free tier's storage is full.
+ */
+export async function deleteMeetingArtifacts(
+  meetings: Pick<MeetingDocument, '_id' | 'recording'>[],
+): Promise<void> {
+  if (meetings.length === 0) return;
+
+  const ids = meetings.map((meeting) => meeting._id);
+  await Promise.all([
+    Message.deleteMany({ meetingId: { $in: ids } }),
+    Transcript.deleteMany({ meetingId: { $in: ids } }),
+    MeetingInsight.deleteMany({ meetingId: { $in: ids } }),
+    // The payload stores ids as strings (it is free-form JSON).
+    Notification.deleteMany({ 'payload.meetingId': { $in: ids.map((id) => id.toString()) } }),
+  ]);
+
+  await Promise.all(
+    meetings.map((meeting) =>
+      meeting.recording?.storage === 'local' && meeting.recording.publicId
+        ? deleteLocalRecording(meeting.recording.publicId)
+        : Promise.resolve(),
+    ),
+  );
 }
 
 /**
