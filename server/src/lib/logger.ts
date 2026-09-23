@@ -22,6 +22,14 @@ const REDACT_PATHS = [
   '*.token',
   '*.accessToken',
   '*.refreshToken',
+  // AI provider and Cloudinary credentials (Phase 6). Nothing logs them on
+  // purpose; this catches the accidental `logger.debug({ config })`.
+  'apiKey',
+  'apiSecret',
+  '*.apiKey',
+  '*.apiSecret',
+  '*.authorization',
+  '*["x-goog-api-key"]',
 ];
 
 /**
