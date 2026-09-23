@@ -12,20 +12,37 @@ import { AUTH_PROVIDERS, USER_ROLES } from '@intellmeet/shared';
  *
  * Rotated tokens are kept with `revokedAt` set rather than deleted: that
  * record is what makes reuse detection possible. If a token that was already
- * rotated away is presented again, it was captured by someone, so every
- * session for that user is revoked.
+ * rotated away is presented again, it was captured by someone - and only the
+ * affected *family* is revoked, not every session the account has.
  */
 const refreshTokenSchema = new Schema(
   {
     hash: { type: String, required: true },
+
+    /**
+     * Identifies the sign-in this token descends from.
+     *
+     * One `POST /api/auth/login` (or `/demo`) starts a family; every rotation
+     * inherits it. Revocation is scoped to a family, so a compromised session
+     * cannot sign out the account's other devices - or, for the shared demo
+     * account, every other reviewer using it at the same time.
+     */
+    familyId: { type: String, required: true },
+
     expiresAt: { type: Date, required: true },
     userAgent: { type: String },
     ip: { type: String },
+
+    // Written explicitly on every `$push`. A raw update operator does not go
+    // through Mongoose's timestamp handling, and the value is load-bearing:
+    // the per-user session cap sorts on it.
+    createdAt: { type: Date, required: true, default: Date.now },
+
     revokedAt: { type: Date },
     /** Links a rotated token to its successor, for auditing a theft chain. */
     replacedByHash: { type: String },
   },
-  { _id: false, timestamps: { createdAt: true, updatedAt: false } },
+  { _id: false },
 );
 
 const userSchema = new Schema(

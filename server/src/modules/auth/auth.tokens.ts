@@ -76,13 +76,27 @@ export interface IssuedRefreshToken {
   token: string;
   /** The value stored in the database. */
   hash: string;
+  /** The sign-in this token belongs to. Revocation is scoped to it. */
+  familyId: string;
   expiresAt: Date;
 }
 
-export function issueRefreshToken(): IssuedRefreshToken {
+/**
+ * Mints a refresh token.
+ *
+ * Passing an existing `familyId` continues that sign-in (a rotation); omitting
+ * it starts a new family, which is what a fresh login or demo sign-in does.
+ */
+export function issueRefreshToken(familyId?: string): IssuedRefreshToken {
   const token = generateOpaqueToken();
   const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
-  return { token, hash: hashRefreshToken(token), expiresAt };
+
+  return {
+    token,
+    hash: hashRefreshToken(token),
+    familyId: familyId ?? generateOpaqueToken(16),
+    expiresAt,
+  };
 }
 
 /**
