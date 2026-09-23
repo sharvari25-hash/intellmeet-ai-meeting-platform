@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SOCKET_EVENTS, type Participant } from '@intellmeet/shared';
-import { MeshTransport } from './MeshTransport';
+import { CONNECT_WATCHDOG_MS, MeshTransport } from './MeshTransport';
 
 /**
  * A fake `RTCPeerConnection`.
@@ -28,6 +28,7 @@ class FakePeerConnection {
   readonly senders: { track: MediaStreamTrack | null; replaceTrack: ReturnType<typeof vi.fn> }[] =
     [];
   readonly addedTracks: MediaStreamTrack[] = [];
+  readonly transceivers: { kind: string; direction: RTCRtpTransceiverDirection }[] = [];
   readonly addedCandidates: RTCIceCandidateInit[] = [];
   restartIce = vi.fn();
   close = vi.fn();
@@ -38,6 +39,14 @@ class FakePeerConnection {
 
   getSenders() {
     return this.senders;
+  }
+
+  getTransceivers() {
+    return this.transceivers;
+  }
+
+  addTransceiver(kind: string, init: { direction: RTCRtpTransceiverDirection }) {
+    this.transceivers.push({ kind, direction: init.direction });
   }
 
   addTrack(track: MediaStreamTrack) {
@@ -100,6 +109,11 @@ function fakeSocket() {
 
 const MEETING_ID = '507f1f77bcf86cd799439011';
 
+/** We are the newcomer and open the negotiation. */
+const OFFER = { initiator: true };
+/** They joined after us; we wait for their offer. */
+const ANSWER = { initiator: false };
+
 function participant(socketId: string, overrides: Partial<Participant> = {}): Participant {
   return {
     socketId,
@@ -145,8 +159,8 @@ describe('MeshTransport', () => {
   it('opens one peer connection per participant, with the server ICE config', () => {
     const { transport } = build('aaa');
 
-    transport.addPeer(participant('bbb'));
-    transport.addPeer(participant('ccc'));
+    transport.addPeer(participant('bbb'), OFFER);
+    transport.addPeer(participant('ccc'), OFFER);
 
     expect(FakePeerConnection.instances).toHaveLength(2);
     expect(FakePeerConnection.instances[0]?.config.iceServers).toEqual([
@@ -157,25 +171,25 @@ describe('MeshTransport', () => {
   it('never opens a connection to itself', () => {
     const { transport } = build('aaa');
 
-    transport.addPeer(participant('aaa'));
+    transport.addPeer(participant('aaa'), OFFER);
 
     expect(FakePeerConnection.instances).toHaveLength(0);
   });
 
-  it('publishes local tracks to a peer that joins later', () => {
+  it('publishes local tracks straight away to a peer it offers to', () => {
     const { transport } = build('aaa');
     const track = { kind: 'video', id: 'v1' } as MediaStreamTrack;
     const stream = { getTracks: () => [track] } as unknown as MediaStream;
 
     transport.start(stream);
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     expect(FakePeerConnection.instances[0]?.addedTracks).toEqual([track]);
   });
 
   it('sends an offer when the browser asks to negotiate', async () => {
     const { socket, transport } = build('aaa');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     FakePeerConnection.instances[0]?.onnegotiationneeded?.();
     await flush();
@@ -186,7 +200,7 @@ describe('MeshTransport', () => {
 
   it('answers an incoming offer', async () => {
     const { socket, transport } = build('aaa');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     socket.deliver(SOCKET_EVENTS.RTC_OFFER, {
       from: 'bbb',
@@ -207,7 +221,7 @@ describe('MeshTransport', () => {
   it('backs down from a colliding offer when it is the polite peer', async () => {
     // 'aaa' < 'bbb', so this transport is polite towards bbb.
     const { socket, transport } = build('aaa');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     // We start an offer...
     FakePeerConnection.instances[0]?.onnegotiationneeded?.();
@@ -233,7 +247,7 @@ describe('MeshTransport', () => {
   it('ignores a colliding offer when it is the impolite peer', async () => {
     // 'zzz' > 'bbb', so this transport is impolite towards bbb.
     const { socket, transport } = build('zzz');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     FakePeerConnection.instances[0]?.onnegotiationneeded?.();
     await flush();
@@ -254,7 +268,7 @@ describe('MeshTransport', () => {
 
   it('relays ICE candidates in both directions', async () => {
     const { socket, transport } = build('aaa');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     const pc = FakePeerConnection.instances[0];
     pc?.onicecandidate?.({
@@ -278,7 +292,7 @@ describe('MeshTransport', () => {
 
   it('drops a signal for a peer it has not been told about', async () => {
     const { socket, transport, onError } = build('aaa');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     socket.deliver(SOCKET_EVENTS.RTC_OFFER, {
       from: 'unknown-peer',
@@ -294,7 +308,7 @@ describe('MeshTransport', () => {
 
   it('restarts ICE instead of dropping the peer when the connection fails', () => {
     const { transport } = build('aaa');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     const pc = FakePeerConnection.instances[0];
     if (!pc) throw new Error('no peer connection');
@@ -310,7 +324,7 @@ describe('MeshTransport', () => {
     const { socket, transport } = build('aaa');
     const camera = { kind: 'video', id: 'cam' } as MediaStreamTrack;
     transport.start({ getTracks: () => [camera] } as unknown as MediaStream);
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     const before = socket.emitted.length;
     const screen = { kind: 'video', id: 'screen' } as MediaStreamTrack;
@@ -324,7 +338,7 @@ describe('MeshTransport', () => {
   it('reports peers to the UI as they arrive, change and leave', () => {
     const { transport, onPeersChanged } = build('aaa');
 
-    transport.addPeer(participant('bbb', { name: 'Grace Hopper' }));
+    transport.addPeer(participant('bbb', { name: 'Grace Hopper' }), OFFER);
     expect(onPeersChanged.mock.lastCall?.[0]).toHaveLength(1);
 
     transport.updatePeerMedia('bbb', { audio: false, video: true, screen: false });
@@ -334,9 +348,132 @@ describe('MeshTransport', () => {
     expect(onPeersChanged.mock.lastCall?.[0]).toHaveLength(0);
   });
 
+  describe('who offers when somebody joins', () => {
+    const camera = { kind: 'video', id: 'cam' } as MediaStreamTrack;
+    const stream = { getTracks: () => [camera] } as unknown as MediaStream;
+
+    it('holds its tracks back from a newcomer until the newcomer offers', async () => {
+      const { socket, transport } = build('aaa');
+      transport.start(stream);
+      transport.addPeer(participant('bbb'), ANSWER);
+
+      const pc = FakePeerConnection.instances[0];
+      // Adding tracks would fire negotiationneeded and make both sides offer
+      // at once - the collision this whole arrangement exists to avoid.
+      expect(pc?.addedTracks).toEqual([]);
+
+      socket.deliver(SOCKET_EVENTS.RTC_OFFER, {
+        from: 'bbb',
+        fromUserId: '507f1f77bcf86cd799439012',
+        meetingId: MEETING_ID,
+        payload: { description: { type: 'offer', sdp: 'newcomer' } },
+      });
+      await flush();
+
+      // Attached to their offer, then answered - one negotiation, no glare.
+      expect(pc?.addedTracks).toEqual([camera]);
+      expect(socket.emitted.some((entry) => entry.event === SOCKET_EVENTS.RTC_ANSWER)).toBe(true);
+    });
+
+    it('still opens the negotiation when it has no camera or microphone', () => {
+      const { transport } = build('aaa');
+      transport.addPeer(participant('bbb'), OFFER);
+
+      // Everyone already in the room is waiting for our offer. With nothing to
+      // send, receive-only transceivers are what give the offer any content.
+      expect(FakePeerConnection.instances[0]?.transceivers).toEqual([
+        { kind: 'audio', direction: 'recvonly' },
+        { kind: 'video', direction: 'recvonly' },
+      ]);
+    });
+  });
+
+  describe('connection watchdog', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('restarts ICE when a connection never leaves "new", from the impolite side', () => {
+      // 'zzz' > 'bbb': impolite, so this side is the one that acts.
+      const { transport } = build('zzz');
+      transport.addPeer(participant('bbb'), OFFER);
+      const pc = FakePeerConnection.instances[0];
+
+      vi.advanceTimersByTime(CONNECT_WATCHDOG_MS - 1);
+      expect(pc?.restartIce).not.toHaveBeenCalled();
+
+      // ICE never started, so it will never reach "failed" and the ordinary
+      // restart would never fire. Without this the tile stays blank forever.
+      vi.advanceTimersByTime(1);
+      expect(pc?.restartIce).toHaveBeenCalledOnce();
+    });
+
+    it('leaves the restart to the other side when it is the polite peer', () => {
+      const { transport } = build('aaa');
+      transport.addPeer(participant('bbb'), OFFER);
+
+      vi.advanceTimersByTime(CONNECT_WATCHDOG_MS);
+
+      // Both ends restarting at once would collide all over again.
+      expect(FakePeerConnection.instances[0]?.restartIce).not.toHaveBeenCalled();
+    });
+
+    it('does nothing once the connection is up', () => {
+      const { transport } = build('zzz');
+      transport.addPeer(participant('bbb'), OFFER);
+      const pc = FakePeerConnection.instances[0];
+      if (!pc) throw new Error('no peer connection');
+
+      pc.connectionState = 'connected';
+      pc.onconnectionstatechange?.();
+      vi.advanceTimersByTime(CONNECT_WATCHDOG_MS * 4);
+
+      expect(pc.restartIce).not.toHaveBeenCalled();
+    });
+
+    it('stops waiting for an offer that never comes and offers itself', () => {
+      const { transport } = build('aaa');
+      const camera = { kind: 'video', id: 'cam' } as MediaStreamTrack;
+      transport.start({ getTracks: () => [camera] } as unknown as MediaStream);
+      transport.addPeer(participant('bbb'), ANSWER);
+      const pc = FakePeerConnection.instances[0];
+
+      expect(pc?.addedTracks).toEqual([]);
+      vi.advanceTimersByTime(CONNECT_WATCHDOG_MS);
+
+      // Publishing now fires negotiationneeded, so we become the offerer.
+      expect(pc?.addedTracks).toEqual([camera]);
+    });
+
+    it('gives up and says so after repeated attempts', () => {
+      const { transport, onError } = build('zzz');
+      transport.addPeer(participant('bbb', { name: 'Grace Hopper' }), OFFER);
+
+      vi.advanceTimersByTime(CONNECT_WATCHDOG_MS * 4);
+
+      expect(FakePeerConnection.instances[0]?.restartIce).toHaveBeenCalledTimes(3);
+      expect(onError).toHaveBeenCalledWith('Could not connect to Grace Hopper.');
+    });
+
+    it('is cancelled when the peer leaves', () => {
+      const { transport } = build('zzz');
+      transport.addPeer(participant('bbb'), OFFER);
+      const pc = FakePeerConnection.instances[0];
+
+      transport.removePeer('bbb');
+      vi.advanceTimersByTime(CONNECT_WATCHDOG_MS * 2);
+
+      expect(pc?.restartIce).not.toHaveBeenCalled();
+    });
+  });
+
   it('closes every connection and stops listening when the room is left', () => {
     const { socket, transport } = build('aaa');
-    transport.addPeer(participant('bbb'));
+    transport.addPeer(participant('bbb'), OFFER);
 
     transport.close();
 
