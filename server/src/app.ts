@@ -9,6 +9,9 @@ import { requestId } from './middleware/requestId.js';
 import { mongoSanitize, preventParameterPollution } from './middleware/sanitize.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { healthRouter } from './modules/health/health.routes.js';
+import { meetingRouter } from './modules/meetings/meeting.routes.js';
+import { notificationRouter } from './modules/notifications/notification.routes.js';
+import { rtcRouter } from './modules/rtc/rtc.routes.js';
 import { teamRouter } from './modules/teams/team.routes.js';
 import { uploadRouter } from './modules/uploads/upload.routes.js';
 import { userRouter } from './modules/users/user.routes.js';
@@ -69,6 +72,9 @@ export function createApp(): Express {
   app.use('/api/auth', authRouter);
   app.use('/api/users', userRouter);
   app.use('/api/teams', teamRouter);
+  app.use('/api/meetings', meetingRouter);
+  app.use('/api/notifications', notificationRouter);
+  app.use('/api/rtc', rtcRouter);
   app.use('/api/uploads', uploadRouter);
 
   app.use(notFound);
