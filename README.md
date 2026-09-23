@@ -2,7 +2,8 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 3 (meetings, real-time, chat, notifications) complete.
+**Status:** 🚧 In development — Phase 4 (frontend foundation) complete. The web
+app runs: landing page, demo sign-in, dashboard, teams and invites.
 
 ---
 
@@ -19,7 +20,9 @@
 | Layer | Choice |
 | --- | --- |
 | Monorepo | npm workspaces (`client/`, `server/`, `shared/`) |
-| Frontend | React 19, TypeScript, Vite 7, Tailwind CSS v4, shadcn/ui, lucide-react |
+| Frontend | React 19, TypeScript, Vite 7, React Router 7, Tailwind CSS v4, shadcn/ui, lucide-react |
+| Client state | TanStack Query (server state), Zustand (session, theme, socket) |
+| Forms | react-hook-form + the shared zod schemas; sonner for toasts |
 | Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
 | Database | MongoDB Atlas + Mongoose |
 | Cache / jobs | Redis (ioredis) + BullMQ *(Phase 6)* |
@@ -51,21 +54,21 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 # 4. Start MongoDB + Redis (required - the API will not boot without them)
 docker compose up -d
 
-# 5. Run the client and the API together
+# 5. Seed the demo workspace so the landing page's "Try Live Demo" button works
+npm run seed -w @intellmeet/server
+
+# 6. Run the client and the API together
 npm run dev
 ```
+
+Then open <http://localhost:5173> and press **Try Live Demo** — no sign-up
+needed. It drops you into a seeded team with three colleagues.
 
 | URL | What |
 | --- | --- |
 | <http://localhost:5173> | Web client (Vite) |
 | <http://localhost:5000/api/health> | Liveness + per-dependency status (always 200) |
 | <http://localhost:5000/api/health/ready> | Readiness (503 if Mongo or Redis is down) |
-
-Seed the demo workspace so `POST /api/auth/demo` works:
-
-```bash
-npm run seed -w @intellmeet/server
-```
 
 The client calls the API on the **same-origin `/api` path**. In development Vite
 proxies that path to `localhost:5000`; in production `client/vercel.json`
@@ -146,6 +149,30 @@ sides import the same constants instead of re-typing strings.
 
 The handshake proves identity only; room access is re-checked on `room:join`.
 Signalling is relayed without being parsed — media never touches the server.
+
+## Web client
+
+| Route | Access | What |
+| --- | --- | --- |
+| `/` | public | Landing page with the **Try Live Demo** button |
+| `/login`, `/register` | signed out | Auth forms built on the shared zod schemas |
+| `/join/:code` | public | Redeems a team invite; signs you in first if needed |
+| `/app` | protected | Dashboard — start a meeting, join by code, recent meetings |
+| `/app/teams`, `/app/teams/:id` | protected | Create/join a team, members, invite link |
+| `/app/settings` | protected | Display name, theme, backend health |
+| `/app/meetings`, `/app/room/:code`, `/app/tasks`, `/app/analytics` | protected | Wired and guarded; their features land in Phases 5–9 |
+
+**Client auth.** The access token lives in a plain JavaScript variable — never
+in `localStorage`, which any script on the origin can read. A hard reload
+therefore starts with no token, and the app exchanges the httpOnly refresh
+cookie for a new one before deciding where to route you; until that settles the
+session status is `bootstrapping`, so a signed-in user is never bounced to
+`/login` mid-reload. A 401 triggers one refresh and one retry, and concurrent
+401s are funnelled into a **single** refresh request — four parallel rotations
+of the same cookie would look exactly like a replayed token to the server.
+
+The signed-in half of the app is a lazy chunk, so a visitor reading the landing
+page never downloads the dashboard or socket.io-client.
 
 **Auth model.** The access token is a 15-minute JWT returned in the response
 body and held in memory by the client. It is sent as `Authorization: Bearer …`
@@ -230,7 +257,7 @@ npm run prepare   # points git at .husky/
 ## Roadmap
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
-Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation · Phase 5 meeting room ·
+Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ·
 Phase 6 recording + AI · Phase 7 history · Phase 8 Kanban · Phase 9 analytics ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.
