@@ -4,6 +4,7 @@ import { connectMongo, disconnectMongo } from './config/db.js';
 import { env } from './config/env.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
 import { logger } from './lib/logger.js';
+import { attachRedisAdapter, closeSocketServer, createSocketServer } from './sockets/index.js';
 
 /**
  * Process entry point: owns the external connections, the HTTP listener and
@@ -24,6 +25,11 @@ async function bootstrap(): Promise<void> {
       `[server] listening on http://localhost:${env.PORT}`,
     );
   });
+
+  // Socket.io shares the HTTP listener: Render's free tier gives one web
+  // service on one port, so REST and WebSocket cannot be split apart.
+  const io = createSocketServer(server);
+  attachRedisAdapter(io);
 
   registerShutdownHandlers(server);
 }
@@ -46,6 +52,11 @@ function registerShutdownHandlers(server: Server): void {
     shuttingDown = true;
 
     logger.info({ signal }, '[server] shutting down');
+
+    // Close Socket.io first so connected clients get a clean disconnect and
+    // reconnect to another instance, rather than having their sockets cut
+    // from under them when the HTTP server dies.
+    await closeSocketServer();
 
     // Stop accepting new connections; the callback fires once in-flight
     // requests have finished.

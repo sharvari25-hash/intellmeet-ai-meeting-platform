@@ -17,18 +17,14 @@ const { setRedisClient } = await import('../config/redis.js');
 const { resetRateLimits } = await import('../middleware/rateLimit.js');
 const mongoose = (await import('mongoose')).default;
 
+const { createFakeRedis } = await import('./fakeRedis.js');
+
 /**
- * Stand-in for ioredis.
- *
- * The suite must not depend on a running Redis server, but the health endpoint
- * has to see a client that answers PING. Only the methods the app actually
- * calls are implemented; the cast is the single place this shortcut is taken.
+ * In-memory Redis for the whole suite: presence, room membership and the
+ * meeting cache all run against it, so those code paths are genuinely
+ * exercised without the tests needing a live server.
  */
-const fakeRedis = {
-  status: 'ready',
-  ping: async () => 'PONG',
-  quit: async () => 'OK',
-} as unknown as import('ioredis').Redis;
+const fakeRedis = createFakeRedis();
 
 beforeAll(async () => {
   await connectMongo({ uri: process.env.MONGODB_URI as string, retries: 1 });
@@ -44,6 +40,10 @@ afterEach(async () => {
   // Rate-limit counters are module-level state that would otherwise leak into
   // the next test and 429 it for no reason.
   resetRateLimits();
+
+  // Same for cached meetings, presence sets and room hashes.
+  fakeRedis.reset();
+  setRedisClient(fakeRedis);
 });
 
 afterAll(async () => {

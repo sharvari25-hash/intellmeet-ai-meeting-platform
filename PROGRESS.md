@@ -5,6 +5,158 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 3 — Meetings API, Socket.io, Chat, Presence, Notifications ✅
+
+**Completed:** 2026-09-23
+
+### Phase 2 follow-up fix: demo session isolation
+
+**Problem:** reuse detection revoked *every* refresh token for the account. On
+the shared demo account that meant one reviewer's two-tab refresh race signed
+out every other reviewer at once.
+
+**Approach chosen: token families as the primary mechanism, plus a short reuse
+grace window inside a family.** Both options were on the table; here is why the
+answer is both rather than either.
+
+- **Families fix the blast radius.** Every sign-in starts a `familyId`, and
+  every rotation inherits it. Reuse detection now revokes that family alone.
+  This follows the OAuth 2.0 Security BCP, which revokes the tokens issued for
+  the affected *grant*, not the whole user. Grace alone would not have fixed
+  this: a genuinely stolen token would still have nuked everyone.
+- **The grace window fixes the false positive.** Families alone still sign the
+  *racing* reviewer out, and the race is not hypothetical - each browser tab is
+  its own JavaScript context, so the Phase 4 client's single-flight refresh
+  queue cannot merge across tabs. Two tabs *will* present the same cookie.
+  Within `REFRESH_REUSE_GRACE_MS` (10s), and only while the family still has a
+  live token, a replay is treated as a concurrent refresh and issued a sibling
+  token instead of being rejected.
+- **Cost, stated plainly:** a genuinely stolen token is accepted for up to the
+  grace window after it was rotated. `REFRESH_REUSE_GRACE_MS=0` disables it.
+- **Why a sibling rather than replaying the original successor:** only the
+  successor's *hash* is stored, so its raw value cannot be handed out twice.
+
+**Session cap:** `MAX_SESSIONS_PER_USER` (default 20), applied on every token
+write via `$push` with `$each`/`$sort`/`$slice: -N`. Expired tokens are pulled
+first so the cap is spent on live sessions. `revokeAllSessions` was removed -
+nothing calls it any more, and family-scoped revocation is the correct default.
+
+### Built
+
+- **Meetings**: full CRUD scoped to team membership, schedule vs start-now,
+  unique 7-character room codes, join-by-code, start/end lifecycle, text
+  search, pagination.
+- **Socket.io**: JWT handshake auth, Redis adapter, room join/leave with
+  participant tracking, WebRTC signalling relay, media-state broadcast, host
+  mute and end-for-everyone, per-socket chat throttling.
+- **Chat**: persisted messages, socket broadcast, typing indicators, and
+  cursor-paginated history at `GET /api/meetings/:id/messages`.
+- **Presence**: Redis-backed, per team, announced once per user rather than
+  once per tab.
+- **Notifications**: model, list with unread count, mark-read, mark-all-read,
+  real-time push via `notify:new`.
+- **`GET /api/rtc/ice-servers`**: STUN always, TURN when configured; the TURN
+  credential stays server-side.
+- **Meeting cache**: Redis read-through with a 60s TTL, invalidated on write.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Socket auth via `handshake.auth.token`, not a cookie** | The socket connects straight to Render while REST goes through the Vercel rewrite, so a Vercel-scoped cookie is never sent and a Render-scoped one would be a third-party cookie browsers increasingly block. A browser also cannot set an `Authorization` header on a WebSocket. |
+| **Room membership re-checked on `room:join`** | The handshake proves *who* you are, never *which* meetings you may enter. Inheriting authorisation from the handshake would let any authenticated user join any room by id. |
+| **The server relays SDP/ICE without parsing it** | That is the whole point of a mesh - media is peer to peer. Parsing session descriptions would add a dependency on WebRTC internals and need updating whenever a browser changes its SDP. Payloads are typed `unknown` deliberately. |
+| **Signalling only relays into rooms the socket has joined** | Otherwise a member of the team could inject offers into a meeting they never entered. |
+| **The cache stores a viewer-independent view; authorisation is never cached** | `isHost` is folded in per request, and team membership is re-checked against MongoDB on every read. Caching an authorisation decision would leave a removed member with access until the TTL expired. A cache hit still costs one indexed `Team.exists` - by design. |
+| **Cached DTOs, not Mongoose documents** | The DTO is all strings, so it survives a JSON round trip. A cached document's `Date` fields would come back as strings and break `.toISOString()`. |
+| **Cursor pagination for chat, page numbers for meetings** | Chat is append-heavy and read newest-first, so an offset shifts under the reader every time someone sends a message. A meeting list changes slowly enough that pages are fine. |
+| **Chat throttle lives on the socket, not in express-rate-limit** | Socket events never touch the Express pipeline. A socket lives on exactly one process, so per-socket state needs no sharing and disappears on disconnect. 15 messages / 10s. |
+| **Sender name and avatar denormalised onto each message** | A broadcast has to render immediately; resolving `senderId` against a user cache first would stall it. The cost is that a renamed user's old messages keep the old name, which is how most chat products behave. |
+| **Presence announced only on a user's first socket** | Otherwise opening a second tab makes a colleague blink offline and online again. |
+| **Room state in Redis with a 12h TTL** | A process killed mid-meeting never runs its disconnect handlers, so without expiry the next visitor would see ghost participants. |
+| **`notification.service` does not emit; the caller does** | It would otherwise import the socket layer, which already imports services - a genuine cycle rather than a cosmetic one. |
+| **Host mute is a request, not enforcement** | The server never touches media. The participant's own client stops the track, which keeps the honest "you were muted" signal. |
+| **Presence/cache failures are fail-open** | Redis going down degrades presence to "we do not know who is online" rather than stopping people joining meetings. Upstash's free tier drops connections. |
+| **`AppSocket`/`AppServer` type aliases rather than a `declare module` augmentation** | Socket.io types `socket.data` through a generic parameter; augmenting the `Socket` interface collides with the generic instead of refining it. |
+| **In-memory Redis stub for tests, rather than `ioredis-mock`** | Presence, room membership and the cache are genuinely Redis-backed, so stubbing each one out would mean the tests never exercise the real paths. Only the commands this codebase issues are implemented, so an unimplemented one fails loudly instead of silently returning undefined. |
+| **Socket tests run a real HTTP + WebSocket server on port 0** | Handshake auth, broadcast-excludes-sender and disconnect cleanup only exist in the transport; calling handlers directly would test none of them. |
+
+### Bugs found while building
+
+1. **Notifications created in the same millisecond sorted non-deterministically.**
+   `insertMany` gives a batch identical `createdAt` values, so the bell would
+   render them in an arbitrary order that changed between reads. Both the
+   notification and chat sorts now use `_id` as a tiebreaker (ObjectIds
+   increase monotonically within a process).
+2. **`seed.ts` and `socket.types.ts` were dragging coverage down.** A CLI
+   script and a type-only module are not application code; excluding them (as
+   `server.ts` already was) moved overall coverage from 87.8% to 91%.
+
+### Known limitations
+
+- **Mesh WebRTC only.** The signalling relay is transport-agnostic, but the
+  client-side mesh (Phase 5) degrades above ~6 participants. The SFU upgrade
+  path (LiveKit) gets documented in `docs/architecture.md`.
+- **No TURN credentials yet**, so `hasTurn` is false and calls behind
+  symmetric NATs will fail. The endpoint is ready; only env vars are missing.
+- **Chat's cursor is a timestamp.** A burst of messages spanning a page
+  boundary within the same millisecond could skip one. Acceptable at human
+  typing speeds; a compound cursor would have to be carried by the client.
+- **`meeting_started` notifications are wired but not yet triggered** by the
+  REST start endpoint - the helper exists and is used by the socket layer.
+- Presence is per team, not per meeting; the participant list serves that.
+- The text index covers meeting titles and descriptions only. Transcript and
+  insight search arrive with those collections in Phase 6.
+- Socket reconnection/backoff is a client concern and lands in Phase 4/5.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **170 passed** (167 server, 3 client) |
+| Socket integration suite | ✅ 21 tests over a real WebSocket |
+| Overall server coverage | ✅ **91% statements**, 83.5% branches |
+| Auth module coverage | ✅ 95.4% (Phase 2 checkpoint required ≥ 70%) |
+| `npm run build` | ✅ all 3 workspaces |
+
+### Manual verification performed
+
+Against the real Docker MongoDB and Redis, two clients over a real WebSocket:
+
+```
+two users signed in           Demo User + Ada Lovelace
+meeting created               201, roomCode T6G59G3, status live
+both sockets connected        transport: websocket
+room join                     A sees 1 -> B sees 2, host flag true
+chat relayed                  "Hello from the live check" from Demo User
+rtc offer relayed verbatim    "v=0 live-check"
+persisted history             1 message
+disconnect cleanup            A was told B left
+ice servers                   2 STUN urls, hasTurn false
+```
+
+Redis state inspected mid-session and after teardown:
+
+```
+WHILE OPEN:   presence keys 2 | room hash 1 participant | cached meeting present, TTL 58s
+AFTER CLOSE:  room hash 0 participants
+AFTER END:    cached meeting absent   (invalidation works)
+ADAPTER:      socket.io-request#/# and socket.io-response#/# pub/sub channels live
+```
+
+### Next phase
+
+**Phase 4 — Frontend Foundation:** React Router with public and protected
+routes, an API client that keeps the access token in memory and single-flights
+concurrent refreshes, a socket client singleton that reconnects with a fresh
+token, the responsive app shell with a notifications bell and theme toggle,
+auth pages built on the shared zod schemas, the landing page with its
+"Try Live Demo" button, and team pages. Target: Lighthouse accessibility ≥ 90.
+
+---
+
 ## Phase 2 — Auth, Users, Teams ✅
 
 **Completed:** 2026-09-23

@@ -5,7 +5,12 @@ import { logger } from '../../lib/logger.js';
 import { burnPasswordComparison, hashPassword, verifyPassword } from '../../lib/password.js';
 import { User, type UserDocument } from '../users/user.model.js';
 import { toPublicUser } from '../users/user.service.js';
-import { hashRefreshToken, issueRefreshToken, signAccessToken } from './auth.tokens.js';
+import {
+  hashRefreshToken,
+  issueRefreshToken,
+  signAccessToken,
+  type IssuedRefreshToken,
+} from './auth.tokens.js';
 
 /** Where a session was created from, recorded against the refresh token. */
 export interface SessionContext {
@@ -20,45 +25,65 @@ export interface AuthResult {
 }
 
 /**
- * Builds the response for a successful authentication and records the new
- * refresh token against the user.
+ * The two array operations every token write performs, as an ordered
+ * bulkWrite.
  *
- * `refreshTokens` is `select: false`, so it is updated with a targeted
- * `$push`/`$pull` rather than by mutating a loaded document - which would
- * write back an empty array and log everyone out.
+ * They cannot be one update: MongoDB refuses an update that touches the same
+ * array path twice ("would create a conflict at 'refreshTokens'"). An ordered
+ * bulkWrite applies them in sequence within a single round trip.
+ *
+ * `$sort` + `$slice: -N` is what caps the array. Sorting ascending by
+ * `createdAt` and keeping the last N leaves the N most recent sessions, so a
+ * heavily shared account - the demo user, signed into by every reviewer -
+ * cannot grow an unbounded document. Expired entries are pulled first so the
+ * cap is spent on live sessions rather than on dead ones.
  */
-async function startSession(user: UserDocument, context: SessionContext): Promise<AuthResult> {
-  const refresh = issueRefreshToken();
-
-  // Two operations rather than one: MongoDB refuses an update that both
-  // `$pull`s from and `$push`es to the same array path ("would create a
-  // conflict at 'refreshTokens'"). An ordered bulkWrite applies them in
-  // sequence within a single round trip.
-  await User.bulkWrite([
+function pushTokenOps(userId: unknown, refresh: IssuedRefreshToken, context: SessionContext) {
+  return [
     {
-      // Housekeeping first: drop tokens that expired while this account was
-      // idle, so the array cannot grow without bound over its lifetime.
       updateOne: {
-        filter: { _id: user._id },
+        filter: { _id: userId },
         update: { $pull: { refreshTokens: { expiresAt: { $lt: new Date() } } } },
       },
     },
     {
       updateOne: {
-        filter: { _id: user._id },
+        filter: { _id: userId },
         update: {
           $push: {
             refreshTokens: {
-              hash: refresh.hash,
-              expiresAt: refresh.expiresAt,
-              userAgent: context.userAgent,
-              ip: context.ip,
+              $each: [
+                {
+                  hash: refresh.hash,
+                  familyId: refresh.familyId,
+                  expiresAt: refresh.expiresAt,
+                  createdAt: new Date(),
+                  userAgent: context.userAgent,
+                  ip: context.ip,
+                },
+              ],
+              $sort: { createdAt: 1 },
+              $slice: -env.MAX_SESSIONS_PER_USER,
             },
           },
         },
       },
     },
-  ] as never);
+  ];
+}
+
+/**
+ * Builds the response for a successful authentication and records a new
+ * refresh token against the user, starting a fresh token family.
+ *
+ * `refreshTokens` is `select: false`, so it is updated with targeted update
+ * operators rather than by mutating a loaded document - which would write back
+ * an empty array and log every session out.
+ */
+async function startSession(user: UserDocument, context: SessionContext): Promise<AuthResult> {
+  const refresh = issueRefreshToken();
+
+  await User.bulkWrite(pushTokenOps(user._id, refresh, context) as never);
 
   return {
     body: {
@@ -139,11 +164,23 @@ export async function demoLogin(context: SessionContext): Promise<AuthResult> {
  *
  * Rotation means every refresh invalidates the token that was presented. The
  * old record is kept with `revokedAt` set rather than deleted, which is what
- * makes theft detectable: the legitimate client and an attacker cannot both
- * keep refreshing, so whoever presents the already-rotated token reveals that
- * the token was copied. At that point the safe assumption is that the account
- * is compromised, so *every* session is revoked and both parties must log in
- * again.
+ * makes theft detectable: whoever presents an already-rotated token reveals
+ * that the token was copied.
+ *
+ * Two things bound the damage of that detection firing:
+ *
+ * 1. **Only the token's family is revoked**, never the whole account. A family
+ *    is one sign-in plus all of its rotations, so a compromised session cannot
+ *    sign out the account's other devices - or, for the shared demo account,
+ *    every other reviewer signed in at the same moment.
+ *
+ * 2. **A short grace window** (`REFRESH_REUSE_GRACE_MS`) treats a replay as a
+ *    concurrent refresh rather than theft, provided the family still has a
+ *    live token. Two browser tabs refresh independently - each tab is its own
+ *    JavaScript context, so the client's single-flight queue cannot merge them
+ *    - and without this, opening a second tab would reliably look like an
+ *    attack. The cost is that a genuinely stolen token is accepted for up to
+ *    the grace window after it was rotated; set the window to 0 to disable it.
  */
 export async function refresh(
   presentedToken: string,
@@ -161,29 +198,59 @@ export async function refresh(
   if (!entry) throw AppError.unauthorized('Invalid or expired session');
 
   if (entry.revokedAt) {
-    // Reuse of a rotated token: revoke everything and make the incident loud.
-    await revokeAllSessions(user._id.toString());
-    logger.error(
-      { userId: user._id.toString(), ip: context.ip, userAgent: context.userAgent },
-      '[auth] refresh token reuse detected - all sessions revoked',
+    const now = Date.now();
+    const withinGrace = now - entry.revokedAt.getTime() <= env.REFRESH_REUSE_GRACE_MS;
+
+    // The family must still be alive for this to be a plausible race. Checking
+    // the family rather than the one direct successor also covers a tab that
+    // rotated twice while the other tab was still in flight.
+    const familyIsLive = user.refreshTokens.some(
+      (token) =>
+        token.familyId === entry.familyId && !token.revokedAt && token.expiresAt.getTime() > now,
     );
-    throw AppError.unauthorized('Session revoked. Please sign in again.');
+
+    if (!withinGrace || !familyIsLive) {
+      await revokeFamily(user._id.toString(), entry.familyId);
+      logger.error(
+        {
+          userId: user._id.toString(),
+          familyId: entry.familyId,
+          ip: context.ip,
+          userAgent: context.userAgent,
+        },
+        '[auth] refresh token reuse detected - session family revoked',
+      );
+      throw AppError.unauthorized('Session revoked. Please sign in again.');
+    }
+
+    // A legitimate concurrent refresh. Issue a sibling token in the same
+    // family rather than rejecting. The successor's raw value was never
+    // stored - only its hash - so it cannot be handed back a second time.
+    logger.debug(
+      { userId: user._id.toString(), familyId: entry.familyId },
+      '[auth] concurrent refresh within the grace window',
+    );
+
+    const sibling = issueRefreshToken(entry.familyId);
+    await User.bulkWrite(pushTokenOps(user._id, sibling, context) as never);
+
+    return buildAuthResult(user, sibling);
   }
 
   if (entry.expiresAt.getTime() <= Date.now()) {
     throw AppError.unauthorized('Session expired. Please sign in again.');
   }
 
-  const next = issueRefreshToken();
+  // Stay in the same family: this is the same sign-in, one rotation later.
+  const next = issueRefreshToken(entry.familyId);
 
-  // Revoke-then-issue, as two ordered operations in one bulkWrite. They cannot
-  // be a single update because `$set` on a matched element and `$push` onto
-  // the same array conflict in MongoDB.
+  // Revoke-then-issue, as ordered operations in one bulkWrite. They cannot be
+  // a single update because `$set` on a matched element, `$pull`, and `$push`
+  // all touch the same array path.
   //
-  // The order is the fail-safe one. If the second operation were lost, the
-  // user simply has to sign in again; the reverse order would briefly leave
-  // both the old and the new token valid, which is exactly what rotation
-  // exists to prevent.
+  // The order is the fail-safe one. If a later operation were lost, the user
+  // simply has to sign in again; the reverse order would briefly leave both
+  // the old and the new token valid, which is exactly what rotation prevents.
   await User.bulkWrite([
     {
       updateOne: {
@@ -196,32 +263,34 @@ export async function refresh(
         },
       },
     },
-    {
-      updateOne: {
-        filter: { _id: user._id },
-        update: {
-          $push: {
-            refreshTokens: {
-              hash: next.hash,
-              expiresAt: next.expiresAt,
-              userAgent: context.userAgent,
-              ip: context.ip,
-            },
-          },
-        },
-      },
-    },
+    ...pushTokenOps(user._id, next, context),
   ] as never);
 
+  return buildAuthResult(user, next);
+}
+
+function buildAuthResult(user: UserDocument, refresh: IssuedRefreshToken): AuthResult {
   return {
     body: {
       user: toPublicUser(user),
       accessToken: signAccessToken({ sub: user._id.toString(), role: user.role }),
       expiresInSec: env.ACCESS_TOKEN_TTL_SEC,
     },
-    refreshToken: next.token,
-    refreshExpiresAt: next.expiresAt,
+    refreshToken: refresh.token,
+    refreshExpiresAt: refresh.expiresAt,
   };
+}
+
+/**
+ * Ends one sign-in and every rotation descended from it.
+ *
+ * This is the blast radius of reuse detection. Scoping it to the family rather
+ * than the account follows the OAuth 2.0 Security BCP, which revokes the
+ * tokens issued for the affected *grant*, and is what keeps one reviewer's
+ * mishap off every other reviewer's session on the shared demo account.
+ */
+export async function revokeFamily(userId: string, familyId: string): Promise<void> {
+  await User.updateOne({ _id: userId }, { $pull: { refreshTokens: { familyId } } } as never);
 }
 
 /**
@@ -237,11 +306,6 @@ export async function logout(presentedToken: string | undefined): Promise<void> 
   await User.updateOne({ 'refreshTokens.hash': hashRefreshToken(presentedToken) }, {
     $pull: { refreshTokens: { hash: hashRefreshToken(presentedToken) } },
   } as never);
-}
-
-/** Drops every refresh token for a user, ending all their sessions. */
-export async function revokeAllSessions(userId: string): Promise<void> {
-  await User.updateOne({ _id: userId }, { $set: { refreshTokens: [] } } as never);
 }
 
 export async function getMe(userId: string): Promise<PublicUser> {

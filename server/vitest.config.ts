@@ -31,7 +31,17 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/**/*.d.ts', 'src/test/**', 'src/server.ts'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.d.ts',
+        'src/test/**',
+        // Process entry point and CLI scripts: exercised by running them, not
+        // by unit tests, and counting them only dilutes the signal.
+        'src/server.ts',
+        'src/scripts/**',
+        // Type-only module; it emits no runtime code to cover.
+        'src/sockets/socket.types.ts',
+      ],
     },
   },
 });

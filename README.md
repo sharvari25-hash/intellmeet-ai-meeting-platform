@@ -2,7 +2,7 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 2 (auth, users, teams) complete.
+**Status:** 🚧 In development — Phase 3 (meetings, real-time, chat, notifications) complete.
 
 ---
 
@@ -23,7 +23,7 @@
 | Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
 | Database | MongoDB Atlas + Mongoose |
 | Cache / jobs | Redis (ioredis) + BullMQ *(Phase 6)* |
-| Real-time | Socket.io + WebRTC mesh *(Phase 3/5)* |
+| Real-time | Socket.io (+ Redis adapter); WebRTC mesh client *(Phase 5)* |
 | AI | Groq (Whisper + Llama), Gemini fallback, Mock provider *(Phase 6)* |
 | Testing | Vitest, Supertest, React Testing Library, Playwright |
 | Tooling | ESLint 9 (flat config), Prettier, Husky, lint-staged, commitlint |
@@ -109,6 +109,43 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | POST | `/api/teams/join` | Bearer | Redeem an invite code |
 | DELETE | `/api/teams/:id/members/:userId` | Bearer | Remove a member (team admin) |
 | PATCH | `/api/teams/:id/members/:userId` | Bearer | Change a member's role (team admin) |
+| POST | `/api/meetings` | Bearer | Create a meeting (schedule, or start now) |
+| GET | `/api/meetings` | Bearer | List meetings (filter, search, paginate) |
+| GET | `/api/meetings/:id` | Bearer | Get a meeting |
+| GET | `/api/meetings/code/:roomCode` | Bearer | Resolve a room code (join by link) |
+| PATCH | `/api/meetings/:id` | Bearer | Edit a meeting (host) |
+| POST | `/api/meetings/:id/start` | Bearer | Start a scheduled meeting (host) |
+| POST | `/api/meetings/:id/end` | Bearer | End a meeting (host) |
+| DELETE | `/api/meetings/:id` | Bearer | Delete a non-live meeting (host) |
+| GET | `/api/meetings/:id/messages` | Bearer | Chat history (cursor paginated) |
+| GET | `/api/notifications` | Bearer | List notifications + unread count |
+| PATCH | `/api/notifications/:id/read` | Bearer | Mark one read |
+| PATCH | `/api/notifications/read-all` | Bearer | Mark all read |
+| GET | `/api/rtc/ice-servers` | Bearer | STUN/TURN config for WebRTC |
+
+## Real-time (Socket.io)
+
+The client connects **directly to the API origin**, not through the Vercel
+rewrite, because a rewrite cannot proxy a WebSocket upgrade — hence
+`VITE_SOCKET_URL`. The access token travels in the handshake `auth` payload
+rather than a cookie: a Vercel-scoped cookie is never sent on that cross-origin
+socket, and a browser cannot set an `Authorization` header on a WebSocket.
+
+Event names and payload schemas live in `shared/src/socketEvents.ts`, so both
+sides import the same constants instead of re-typing strings.
+
+| Group | Events |
+| --- | --- |
+| Room | `room:join` `room:leave` `room:participants` `room:user-joined` `room:user-left` `room:host-mute` `room:end` |
+| WebRTC | `rtc:offer` `rtc:answer` `rtc:ice-candidate` (targeted by socket id, relayed verbatim) |
+| Media | `media:toggle` |
+| Chat | `chat:send` `chat:message` `chat:typing` `chat:stop-typing` |
+| Presence | `presence:online` `presence:offline` |
+| Notifications | `notify:new` |
+| Errors | `socket:error` (same `{ code, message }` vocabulary as REST) |
+
+The handshake proves identity only; room access is re-checked on `room:join`.
+Signalling is relayed without being parsed — media never touches the server.
 
 **Auth model.** The access token is a 15-minute JWT returned in the response
 body and held in memory by the client. It is sent as `Authorization: Bearer …`
@@ -116,9 +153,17 @@ and never as a cookie, so nothing the browser attaches automatically can
 authenticate a protected route — which makes CSRF structurally impossible on
 every protected endpoint. The refresh token is opaque (not a JWT), stored only
 as a SHA-256 hash, rotated on every refresh, and lives in an httpOnly,
-`SameSite=Lax` cookie scoped to `/api/auth`. Presenting a refresh token that
-has already been rotated is treated as theft: every session for that account is
-revoked.
+`SameSite=Lax` cookie scoped to `/api/auth`.
+
+Every sign-in starts a **token family**, and each rotation inherits it.
+Presenting a token that has already been rotated is treated as theft and
+revokes **that family only** — not the account's other sessions, which matters
+because the demo account is shared by every reviewer. A replay within
+`REFRESH_REUSE_GRACE_MS` (10s) while the family is still live is treated as a
+concurrent refresh instead: two browser tabs are separate JavaScript contexts
+and will race, so without the window a second tab would look exactly like an
+attack. `MAX_SESSIONS_PER_USER` caps retained tokens, pruning expired then
+oldest.
 
 **Roles.** `role` on a user is platform-wide and gates cross-tenant operations.
 A separate per-team role (`members[].role`) gates everything tenant-scoped —
@@ -185,7 +230,7 @@ npm run prepare   # points git at .husky/
 ## Roadmap
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
-Phase 3 meetings + Socket.io · Phase 4 frontend foundation · Phase 5 meeting room ·
+Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation · Phase 5 meeting room ·
 Phase 6 recording + AI · Phase 7 history · Phase 8 Kanban · Phase 9 analytics ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.
