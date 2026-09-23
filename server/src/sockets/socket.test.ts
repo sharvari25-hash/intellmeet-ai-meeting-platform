@@ -473,3 +473,76 @@ describe('presence', () => {
     expect((await offline).userId).toBe(member.id);
   });
 });
+
+describe('recording indicator', () => {
+  /** Host and member both in the room, with the member listening. */
+  async function bothInRoom() {
+    const { host, member, meetingId } = await liveMeeting();
+    const hostSocket = await client(host);
+    const memberSocket = await client(member);
+
+    hostSocket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    await waitFor(hostSocket, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+    memberSocket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    await waitFor(memberSocket, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+
+    return { host, member, meetingId, hostSocket, memberSocket };
+  }
+
+  it("tells everyone when the host starts recording, the host's own tab included", async () => {
+    const { host, meetingId, hostSocket, memberSocket } = await bothInRoom();
+
+    const seenByMember = waitFor<{ recording: boolean; byUserId: string }>(
+      memberSocket,
+      SOCKET_EVENTS.RECORDING_STATE,
+    );
+    const seenByHost = waitFor(hostSocket, SOCKET_EVENTS.RECORDING_STATE);
+    hostSocket.emit(SOCKET_EVENTS.RECORDING_STATE, { meetingId, recording: true });
+
+    expect(await seenByMember).toEqual({ meetingId, recording: true, byUserId: host.id });
+    await seenByHost;
+  });
+
+  it('shows the indicator to somebody who joins mid-recording', async () => {
+    const { host, member, meetingId } = await liveMeeting();
+    const hostSocket = await client(host);
+
+    hostSocket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    const first = await waitFor<{ recording: boolean }>(
+      hostSocket,
+      SOCKET_EVENTS.ROOM_PARTICIPANTS,
+    );
+    expect(first.recording).toBe(false);
+
+    hostSocket.emit(SOCKET_EVENTS.RECORDING_STATE, { meetingId, recording: true });
+    await waitFor(hostSocket, SOCKET_EVENTS.RECORDING_STATE);
+
+    const late = await client(member);
+    late.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    const roster = await waitFor<{ recording: boolean }>(late, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+
+    expect(roster.recording).toBe(true);
+  });
+
+  it('refuses a recording signal from anyone but the host', async () => {
+    const { meetingId, memberSocket } = await bothInRoom();
+
+    memberSocket.emit(SOCKET_EVENTS.RECORDING_STATE, { meetingId, recording: true });
+    const error = await waitFor<{ code: string }>(memberSocket, SOCKET_EVENTS.ERROR);
+
+    expect(error.code).toBe('FORBIDDEN');
+  });
+
+  it('clears the indicator when the recording tab disappears without saying so', async () => {
+    const { meetingId, hostSocket, memberSocket } = await bothInRoom();
+
+    hostSocket.emit(SOCKET_EVENTS.RECORDING_STATE, { meetingId, recording: true });
+    await waitFor(memberSocket, SOCKET_EVENTS.RECORDING_STATE);
+
+    const cleared = waitFor<{ recording: boolean }>(memberSocket, SOCKET_EVENTS.RECORDING_STATE);
+    hostSocket.disconnect();
+
+    // Otherwise everyone left behind would be told they are still recorded.
+    expect((await cleared).recording).toBe(false);
+  });
+});
