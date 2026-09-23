@@ -1,0 +1,54 @@
+{
+  "name": "intellmeet-ai-meeting-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "IntellMeet - AI-powered enterprise meeting and collaboration platform",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm run build --workspace @intellmeet/shared && concurrently -n shared,server,client -c gray,blue,magenta \"npm:dev:shared\" \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:shared": "npm run dev --workspace @intellmeet/shared",
+    "dev:server": "npm run dev --workspace @intellmeet/server",
+    "dev:client": "npm run dev --workspace @intellmeet/client",
+    "build": "npm run build --workspace @intellmeet/shared && npm run build --workspace @intellmeet/server && npm run build --workspace @intellmeet/client",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky || true"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "@eslint/js": "^9.32.0",
+    "concurrently": "^9.2.0",
+    "eslint": "^9.32.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.20",
+    "globals": "^16.3.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
+    "prettier": "^3.6.2",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{js,jsx,json,css,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}
