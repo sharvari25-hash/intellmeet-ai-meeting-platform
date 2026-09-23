@@ -2,7 +2,7 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 1 (backend foundation) complete.
+**Status:** 🚧 In development — Phase 2 (auth, users, teams) complete.
 
 ---
 
@@ -33,7 +33,7 @@
 
 - **Node.js 22+** (`.nvmrc` pins 22 — run `nvm use`)
 - **npm 10+**
-- **Docker Desktop** (optional until Phase 1 — provides local MongoDB + Redis)
+- **Docker Desktop** — provides local MongoDB + Redis, both required
 
 ## Quick start
 
@@ -41,14 +41,17 @@
 # 1. Install every workspace's dependencies from the repo root
 npm install
 
-# 2. Create local env files (defaults work out of the box)
+# 2. Create local env files
 cp server/.env.example server/.env
 cp client/.env.example client/.env
 
-# 3. Start MongoDB + Redis (required - the API will not boot without them)
+# 3. Set JWT_SECRET in server/.env (the server refuses to start without it)
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# 4. Start MongoDB + Redis (required - the API will not boot without them)
 docker compose up -d
 
-# 4. Run the client and the API together
+# 5. Run the client and the API together
 npm run dev
 ```
 
@@ -57,6 +60,12 @@ npm run dev
 | <http://localhost:5173> | Web client (Vite) |
 | <http://localhost:5000/api/health> | Liveness + per-dependency status (always 200) |
 | <http://localhost:5000/api/health/ready> | Readiness (503 if Mongo or Redis is down) |
+
+Seed the demo workspace so `POST /api/auth/demo` works:
+
+```bash
+npm run seed -w @intellmeet/server
+```
 
 The client calls the API on the **same-origin `/api` path**. In development Vite
 proxies that path to `localhost:5000`; in production `client/vercel.json`
@@ -77,6 +86,44 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 
 Target a single workspace with `-w`, e.g. `npm run test -w @intellmeet/server`.
 Server coverage: `npm run test:coverage -w @intellmeet/server`.
+
+## API overview
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| GET | `/api/health` | – | Liveness + per-dependency status |
+| GET | `/api/health/ready` | – | Readiness (503 when a dependency is down) |
+| POST | `/api/auth/register` | – | Create an account |
+| POST | `/api/auth/login` | – | Sign in (5 attempts / 15 min per IP+email) |
+| POST | `/api/auth/demo` | – | Sign in as the seeded demo account |
+| POST | `/api/auth/refresh` | cookie | Rotate the refresh token |
+| POST | `/api/auth/logout` | cookie | End the session (idempotent) |
+| GET | `/api/auth/me` | Bearer | Current user |
+| GET | `/api/users/me` | Bearer | Current user |
+| PATCH | `/api/users/me` | Bearer | Update name / avatar |
+| GET | `/api/uploads/signature` | Bearer | Cloudinary signed direct-upload params |
+| POST | `/api/teams` | Bearer | Create a team |
+| GET | `/api/teams` | Bearer | List my teams |
+| GET | `/api/teams/:id` | Bearer | Get a team (members only) |
+| POST | `/api/teams/:id/invites` | Bearer | Mint an invite code (team admin) |
+| POST | `/api/teams/join` | Bearer | Redeem an invite code |
+| DELETE | `/api/teams/:id/members/:userId` | Bearer | Remove a member (team admin) |
+| PATCH | `/api/teams/:id/members/:userId` | Bearer | Change a member's role (team admin) |
+
+**Auth model.** The access token is a 15-minute JWT returned in the response
+body and held in memory by the client. It is sent as `Authorization: Bearer …`
+and never as a cookie, so nothing the browser attaches automatically can
+authenticate a protected route — which makes CSRF structurally impossible on
+every protected endpoint. The refresh token is opaque (not a JWT), stored only
+as a SHA-256 hash, rotated on every refresh, and lives in an httpOnly,
+`SameSite=Lax` cookie scoped to `/api/auth`. Presenting a refresh token that
+has already been rotated is treated as theft: every session for that account is
+revoked.
+
+**Roles.** `role` on a user is platform-wide and gates cross-tenant operations.
+A separate per-team role (`members[].role`) gates everything tenant-scoped —
+inviting, removing members and changing roles. A non-member receives 404 for a
+team rather than 403, so the existence of other tenants' teams is not leaked.
 
 ## API error format
 
@@ -137,8 +184,8 @@ npm run prepare   # points git at .husky/
 
 ## Roadmap
 
-Phase 0 scaffold ✅ · Phase 1 backend foundation · Phase 2 auth/teams · Phase 3
-meetings + Socket.io · Phase 4 frontend foundation · Phase 5 meeting room ·
+Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
+Phase 3 meetings + Socket.io · Phase 4 frontend foundation · Phase 5 meeting room ·
 Phase 6 recording + AI · Phase 7 history · Phase 8 Kanban · Phase 9 analytics ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.

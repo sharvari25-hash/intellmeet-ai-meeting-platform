@@ -43,8 +43,10 @@ export default tseslint.config(
     },
   },
   {
-    // The server bootstrap legitimately logs to stdout.
-    files: ['server/src/server.ts', 'server/src/config/**/*.ts'],
+    // The server bootstrap, config loader and CLI scripts legitimately write
+    // to stdout: env validation fails before the logger exists, and a seed
+    // script's output is meant for the operator reading the terminal.
+    files: ['server/src/server.ts', 'server/src/config/**/*.ts', 'server/src/scripts/**/*.ts'],
     rules: { 'no-console': 'off' },
   },
 

@@ -5,6 +5,150 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 2 — Auth, Users, Teams ✅
+
+**Completed:** 2026-09-23
+
+### Built
+
+- **Auth**: `POST /api/auth/register | login | refresh | logout | demo`,
+  `GET /api/auth/me`. bcrypt (cost 12), opaque refresh tokens stored as
+  SHA-256 hashes, rotation on every refresh with **reuse detection** that
+  revokes every session.
+- **Access/refresh split**: 15-minute JWT access token returned in the body
+  (client holds it in memory); 7-day opaque refresh token in an httpOnly,
+  `SameSite=Lax`, `Path=/api/auth` cookie.
+- **`requireAuth` / `requireRole`** middleware, plus `currentUser(req)` so
+  controllers never need a non-null assertion.
+- **Rate limiting**: 5 login attempts / 15 min per **IP + email**, 30 other
+  auth requests / 15 min per IP, 30 writes / min. Redis store in dev and
+  production, in-memory under test.
+- **Users**: `GET/PATCH /api/users/me`, with `publicUserSchema` as the only
+  shape that leaves the server.
+- **Uploads**: `GET /api/uploads/signature` returning Cloudinary signed
+  direct-upload parameters. Cloudinary is **optional** — unconfigured returns
+  `SERVICE_UNAVAILABLE` and nothing else breaks.
+- **Teams**: create, list mine, get, invite, join by code, remove member,
+  change role — all scoped to membership, with a team-level admin role that is
+  separate from the platform role.
+- **Demo mode**: idempotent seed script (`npm run seed -w @intellmeet/server`)
+  creating a demo user, three teammates and a demo team; `POST /api/auth/demo`
+  signs in with no credentials.
+- `.gitattributes` with `* text=auto eol=lf`.
+- `docker-compose.yml` now sets `name: intellmeet`.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Refresh token is opaque + SHA-256 hashed, not a JWT** | A JWT refresh token cannot be revoked without a denylist anyway, so the stateless benefit is illusory. SHA-256 rather than bcrypt because the token is 32 bytes of CSPRNG output: there is no low-entropy guess to slow down, and a deterministic digest is what makes the indexed lookup — and therefore reuse detection — possible at all. |
+| **Rotated tokens are kept with `revokedAt`, not deleted** | That record *is* the reuse detector. The legitimate client and a thief cannot both keep refreshing, so whoever presents an already-rotated token proves the token was copied. Both are then logged out, because we cannot tell which is which. |
+| **Access token is Bearer-only, never a cookie** | Nothing the browser attaches automatically can authenticate a protected route, so CSRF is structurally impossible on every route except `/api/auth/refresh` — and that one only rotates tokens and returns a body the attacker cannot read cross-origin. |
+| **No DB round trip in `requireAuth`** | Keeps authenticated requests cheap. The cost is that a role change or deletion takes effect at the next refresh rather than instantly, which is why the access-token TTL is 15 minutes. |
+| **Identical error message for "wrong password" and "no such account"**, plus a dummy bcrypt comparison | Different messages enumerate accounts; different *timings* enumerate them just as reliably. `burnPasswordComparison()` equalises the ~350ms. |
+| **Login limiter keys on IP *and* email** | IP alone punishes everyone behind one NAT when a colleague fat-fingers a password. Email alone lets an attacker lock a victim out by deliberately failing. The pair throttles stuffing against one account without collateral damage. |
+| **`bcryptjs`, not native `bcrypt`** | Production is `node:22-alpine` (musl), where native prebuilds routinely miss and the build falls back to compiling inside the image. Pure JS builds identically everywhere; ~2-3x slower per hash, which is irrelevant at login rates. |
+| **`BCRYPT_COST` lowered to 4 under test** | The suite hashes hundreds of passwords. Deliberate slowness proves nothing in a test and would add minutes. |
+| **Non-member gets 404 on a team, not 403** | 403 confirms "this team exists, you just cannot see it", leaking the existence of other tenants' teams. A member who lacks *admin* does get 403, because the team's existence is not a secret to them. |
+| **Invite codes stored in plain text** | Unlike a refresh token, an invite code is meant to be copied into a chat and typed by hand; hashing would stop the admin ever seeing it again. It is short-lived (7 days), revocable, and only grants "join one team as a member". |
+| **Cloudinary signed via the official SDK's `api_sign_request`, with the secret passed per call** | Avoids reimplementing the signing algorithm, and avoids the SDK's global `config()` singleton — so the function is pure and testable with throwaway credentials. |
+| **Cloudinary "mocked" by configuration, not by stubbing** | Signing is a pure local computation, so the tests use fake credentials and recompute the signature with the real algorithm. Stronger than a stub, which would only assert against a hand-written fake. |
+| **Team role is separate from platform role** | Almost every authorisation check in the product is tenant-scoped. `requireRole('admin')` is reserved for cross-tenant operations; `getTeamForAdmin` does the per-team check. |
+| **Seed script is idempotent** | It will be pointed at the production database after deploy (Phase 12 step 8). Re-running must not duplicate members. |
+
+### Bugs found by running it (not by the tests)
+
+1. **MongoDB rejects `$push` + `$pull` on the same array path.** Both
+   `startSession` and `refresh` hit `"Updating the path 'refreshTokens' would
+   create a conflict"`. Restructured as ordered `bulkWrite` operations. In
+   `refresh` the order is deliberately revoke-then-issue: if the second
+   operation were lost the user just signs in again, whereas the reverse order
+   would briefly leave two valid tokens — exactly what rotation prevents.
+2. **`rate-limit-redis` calls Redis in its constructor.** The limiters were
+   module-level constants evaluated when `app.ts` imported the routers, which
+   happens *before* `bootstrap()` calls `connectRedis()` — so the process
+   crashed on startup. The tests never saw it because they use the in-memory
+   store. Limiters are now built lazily on first request.
+3. **`z.url()` accepts `javascript:alert(1)`.** It is a syntactically valid
+   URL. Stored as an avatar and later rendered into an attribute, that is
+   stored XSS. Added `httpsUrlSchema`, which checks the *parsed* protocol
+   (so `JavaScript:`, leading whitespace and embedded newlines are all
+   normalised away before the check).
+4. **A blank `CLOUDINARY_*=` line would refuse to boot.** `.optional()` only
+   accepts `undefined`, so `KEY=` arrives as `''` and fails `.min(1)` — and a
+   blank value is exactly how Render expresses an unset variable. Empty
+   strings are now normalised to "not set".
+
+Also improved from Phase 1: the error handler preserved only a generic
+`"Internal server error"` message on unexpected 500s, which made the first
+failure above invisible in a test run (`LOG_LEVEL=silent`). It now keeps the
+original message, still masked in production.
+
+### Known limitations
+
+- Google OAuth2 skipped by decision. `authProviderSchema` is `local | demo`;
+  `google` gets added if it is implemented later.
+- Cloudinary has no credentials yet, so the upload path is exercised only up
+  to the signature. The browser-to-Cloudinary leg is unverified until an
+  account exists.
+- The seed script creates users and a team only. Meetings, insights and tasks
+  are added in Phases 3, 6 and 8 when those models exist.
+- No "active sessions" UI yet, though `userAgent`/`ip` are recorded per
+  refresh token specifically so one can be built.
+- No email verification or password reset — not in the plan's scope.
+- The demo account is shared and writable; Phase 4 should make destructive
+  actions on it obvious in the UI.
+- `requireRole('admin')` has no route using it yet (no platform-admin surface
+  exists), so it is covered by unit-level reasoning rather than an endpoint test.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **106 passed** (103 server, 3 client) |
+| Auth module coverage | ✅ **97.9% statements**, 86.4% branches (checkpoint requires ≥ 70%) |
+| Teams module coverage | ✅ 99.2% statements |
+| Users / uploads coverage | ✅ 100% statements |
+| Overall server coverage | ✅ 87.1% statements |
+| `npm run build` | ✅ all 3 workspaces |
+
+### Manual verification performed
+
+Against the real Docker MongoDB and Redis, after `npm run seed`:
+
+```
+POST /api/auth/demo               → 200, demo user, 15-min access token
+GET  /api/auth/me                 → 200, correct user
+GET  /api/teams                   → 200, seeded team, 4 members, myRole=admin
+POST /api/auth/refresh  (valid)   → 200  (rotates)
+POST /api/auth/refresh  (rotated) → 200  (chain continues)
+POST /api/auth/refresh  (replay)  → 401  "Session revoked"   ← reuse detected
+POST /api/auth/refresh  (legit)   → 401                       ← all sessions revoked
+5x bad login                      → 401, 6th → 429
+GET  /api/uploads/signature       → 503 SERVICE_UNAVAILABLE   (no Cloudinary yet)
+npm run seed (run twice)          → still 4 members, no duplicates
+```
+
+Redis was inspected directly to confirm the counters are genuinely distributed
+rather than per-process:
+
+```
+rl:login:::1|demo@intellmeet.app => 6
+rl:auth:::1
+```
+
+### Next phase
+
+**Phase 3 — Meetings API, Socket.io, Chat, Presence, Notifications:** meeting
+CRUD scoped to team membership, unique short room codes, Socket.io with the
+Redis adapter and a JWT handshake (reusing `verifyAccessToken`), room
+join/leave and participant tracking, WebRTC signalling relay, persisted chat
+with pagination, presence, notifications, and `GET /api/rtc/ice-servers`.
+
+---
+
 ## Phase 1 — Backend Foundation ✅
 
 **Completed:** 2026-09-23
