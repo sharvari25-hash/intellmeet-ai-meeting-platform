@@ -1,0 +1,125 @@
+{
+  "key": "summary-page-design-review",
+  "title": "Design review: meeting summary page",
+  "description": "Layout and priorities for the page people see after a meeting.",
+  "meetingDate": "2026-09-16T11:00:00.000Z",
+  "durationSec": 1500,
+  "host": "Demo User",
+  "participants": ["Demo User", "Ada Lovelace", "Grace Hopper", "Alan Turing"],
+  "segments": [
+    {
+      "start": 0,
+      "end": 10,
+      "speaker": "Demo User",
+      "text": "Okay, Alan has the new mock-ups for the meeting summary page. Alan, walk us through them."
+    },
+    {
+      "start": 11,
+      "end": 29,
+      "speaker": "Alan Turing",
+      "text": "Two options. Option A is one long scrolling page: summary, then decisions, then action items, then the full transcript. Option B puts those in tabs, with the summary tab open by default."
+    },
+    {
+      "start": 30,
+      "end": 44,
+      "speaker": "Grace Hopper",
+      "text": "From the interviews last month, the first thing people look for is their own action items. In option A they are halfway down the page."
+    },
+    {
+      "start": 45,
+      "end": 57,
+      "speaker": "Ada Lovelace",
+      "text": "And the transcript can be an hour long. Putting it on the same page makes everything below it unreachable on a phone."
+    },
+    {
+      "start": 58,
+      "end": 71,
+      "speaker": "Demo User",
+      "text": "So we go with tabs. Let's go with option B, and the action items should appear above the transcript in the tab order, right after the summary."
+    },
+    {
+      "start": 72,
+      "end": 78,
+      "speaker": "Alan Turing",
+      "text": "Makes sense. I'll prototype the tabbed layout by Friday."
+    },
+    {
+      "start": 79,
+      "end": 95,
+      "speaker": "Ada Lovelace",
+      "text": "One accessibility worry. The status badges in the mock-up, the amber for queued and the green for done, look too light on white. I doubt they pass contrast."
+    },
+    {
+      "start": 96,
+      "end": 103,
+      "speaker": "Demo User",
+      "text": "Ada, can you check the contrast on the status badges tomorrow?"
+    },
+    {
+      "start": 104,
+      "end": 109,
+      "speaker": "Ada Lovelace",
+      "text": "Yes, I'll check the badge contrast tomorrow morning."
+    },
+    {
+      "start": 110,
+      "end": 127,
+      "speaker": "Alan Turing",
+      "text": "What about export? The mock-up has a PDF button and a Markdown button. PDF is a lot of work for the first version."
+    },
+    {
+      "start": 128,
+      "end": 141,
+      "speaker": "Grace Hopper",
+      "text": "People mostly paste summaries into Slack. A copy-summary button would cover most of it. Could we ship copy first and do PDF later?"
+    },
+    {
+      "start": 142,
+      "end": 152,
+      "speaker": "Demo User",
+      "text": "Agreed, the copy summary button ships in the first version and PDF export comes later."
+    },
+    {
+      "start": 153,
+      "end": 168,
+      "speaker": "Grace Hopper",
+      "text": "I'd like to test the prototype with real users before we build it properly. I'll run five usability sessions by next Wednesday, once Alan's prototype is ready."
+    },
+    {
+      "start": 169,
+      "end": 182,
+      "speaker": "Alan Turing",
+      "text": "Should the transcript be editable? People will want to fix names the AI got wrong."
+    },
+    {
+      "start": 183,
+      "end": 196,
+      "speaker": "Demo User",
+      "text": "Probably, but not in this review. Let's park editing and come back to it after Grace's sessions. Thanks everyone."
+    }
+  ],
+  "reference": {
+    "summary": "The team reviewed two layouts for the meeting summary page and chose the tabbed design, with action items placed right after the summary and before the transcript, because users look for their own action items first and long transcripts are hard to scroll past on phones. Ada raised a concern that the status badge colours may fail contrast checks. A copy-summary button will ship in the first version, with PDF export later. Grace will validate the prototype in usability sessions. Whether transcripts should be editable was deferred.",
+    "keyDecisions": [
+      "Use the tabbed layout (option B), with action items right after the summary and before the transcript",
+      "Ship a copy-summary button in the first version; PDF export comes later"
+    ],
+    "actionItems": [
+      {
+        "text": "Prototype the tabbed summary page layout",
+        "assigneeName": "Alan Turing",
+        "dueDate": "2026-09-18"
+      },
+      {
+        "text": "Check the colour contrast of the status badges",
+        "assigneeName": "Ada Lovelace",
+        "dueDate": "2026-09-17"
+      },
+      {
+        "text": "Run five usability sessions on the prototype",
+        "assigneeName": "Grace Hopper",
+        "dueDate": "2026-09-23"
+      }
+    ]
+  }
+}

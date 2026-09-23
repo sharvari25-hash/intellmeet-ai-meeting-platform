@@ -1,0 +1,178 @@
+{
+  "key": "sprint-14-planning",
+  "title": "Sprint 14 planning",
+  "description": "Scope and owners for the two-week sprint starting today.",
+  "meetingDate": "2026-09-14T09:30:00.000Z",
+  "durationSec": 1260,
+  "host": "Demo User",
+  "participants": ["Demo User", "Ada Lovelace", "Grace Hopper", "Alan Turing"],
+  "segments": [
+    {
+      "start": 0,
+      "end": 9,
+      "speaker": "Demo User",
+      "text": "Morning everyone. Let's keep this to twenty minutes. First a quick look back at sprint thirteen, then scope for fourteen."
+    },
+    {
+      "start": 10,
+      "end": 24,
+      "speaker": "Ada Lovelace",
+      "text": "We closed thirty-one of thirty-eight points. The seven we missed were all the Outlook calendar work, which turned out to need an admin consent flow we did not know about."
+    },
+    {
+      "start": 25,
+      "end": 36,
+      "speaker": "Alan Turing",
+      "text": "And the recording upload bug is still open. About one in twenty uploads fails on a slow connection and there is no retry, so the audio is just lost."
+    },
+    {
+      "start": 37,
+      "end": 50,
+      "speaker": "Demo User",
+      "text": "That one worries me more than anything else on the board. Losing a recording means losing the summary, and that is the whole product."
+    },
+    {
+      "start": 51,
+      "end": 66,
+      "speaker": "Grace Hopper",
+      "text": "I looked at it on Friday. The fix is a chunked upload with a retry on each part. I think it is two or three days of work including tests."
+    },
+    {
+      "start": 67,
+      "end": 78,
+      "speaker": "Demo User",
+      "text": "Grace, can you take the upload retry fix and have it merged by Friday?"
+    },
+    {
+      "start": 79,
+      "end": 84,
+      "speaker": "Grace Hopper",
+      "text": "Yes, I'll have the upload retry fix merged by Friday."
+    },
+    {
+      "start": 85,
+      "end": 101,
+      "speaker": "Ada Lovelace",
+      "text": "On calendars, I'd suggest we drop Outlook from this sprint entirely and do Google Calendar first. The Google flow is standard OAuth and we already have the consent screen approved."
+    },
+    {
+      "start": 102,
+      "end": 112,
+      "speaker": "Alan Turing",
+      "text": "Could we do both in parallel if we split the team? I could pick up Outlook."
+    },
+    {
+      "start": 113,
+      "end": 128,
+      "speaker": "Demo User",
+      "text": "I'd rather not split. We have tried parallel integrations before and ended up with two half-finished ones. Let's go with Google Calendar only this sprint, and Outlook moves to the backlog."
+    },
+    {
+      "start": 129,
+      "end": 134,
+      "speaker": "Alan Turing",
+      "text": "Fair enough, that makes sense."
+    },
+    {
+      "start": 135,
+      "end": 149,
+      "speaker": "Demo User",
+      "text": "Ada, you know the calendar code best. Can you do a spike on the Google Calendar OAuth flow and share what you find by Wednesday?"
+    },
+    {
+      "start": 150,
+      "end": 158,
+      "speaker": "Ada Lovelace",
+      "text": "Sure. I'll write up the Google Calendar spike by Wednesday, including how we store the refresh tokens."
+    },
+    {
+      "start": 159,
+      "end": 175,
+      "speaker": "Alan Turing",
+      "text": "That leaves me free for the onboarding checklist. Support says half the tickets from new teams are people who never found the invite button."
+    },
+    {
+      "start": 176,
+      "end": 186,
+      "speaker": "Demo User",
+      "text": "Good. Alan, please rewrite the onboarding checklist copy so the invite step comes first. No hard deadline, but this sprint."
+    },
+    {
+      "start": 187,
+      "end": 193,
+      "speaker": "Alan Turing",
+      "text": "Will do, I'll rewrite the onboarding checklist this sprint."
+    },
+    {
+      "start": 194,
+      "end": 210,
+      "speaker": "Grace Hopper",
+      "text": "One more thing on process. Scope kept creeping last sprint because people added tickets mid-week. Can we freeze scope after planning?"
+    },
+    {
+      "start": 211,
+      "end": 224,
+      "speaker": "Demo User",
+      "text": "Agreed. We decided that from now on sprint scope is frozen on Wednesday, and anything new goes to the next sprint unless it is a production incident."
+    },
+    {
+      "start": 225,
+      "end": 236,
+      "speaker": "Ada Lovelace",
+      "text": "And maybe we should move the demo to Thursday so stakeholders can actually attend? Fridays have been empty."
+    },
+    {
+      "start": 237,
+      "end": 247,
+      "speaker": "Demo User",
+      "text": "Maybe. Let me check with the stakeholders before we change it. We will keep Friday for now."
+    },
+    {
+      "start": 248,
+      "end": 262,
+      "speaker": "Demo User",
+      "text": "Last thing from me: I'll send the sprint goals to the stakeholders today, so they know Outlook has slipped before they hear it from someone else."
+    },
+    {
+      "start": 263,
+      "end": 270,
+      "speaker": "Grace Hopper",
+      "text": "Sounds good. Nothing else from me."
+    },
+    {
+      "start": 271,
+      "end": 277,
+      "speaker": "Demo User",
+      "text": "Great. Thanks everyone, see you at stand-up."
+    }
+  ],
+  "reference": {
+    "summary": "The team reviewed sprint 13, which closed 31 of 38 points; the missed work was the Outlook calendar integration, which needs an unexpected admin consent flow. A recording upload bug that loses about one in twenty uploads on slow connections was treated as the top priority. The team chose to build Google Calendar only this sprint and move Outlook to the backlog, rejecting a proposal to build both in parallel. Sprint scope will now be frozen on Wednesdays. Moving the sprint demo to Thursday was raised but deferred until stakeholders are consulted.",
+    "keyDecisions": [
+      "Build Google Calendar only this sprint; Outlook moves to the backlog",
+      "Sprint scope is frozen on Wednesday; new work goes to the next sprint unless it is a production incident"
+    ],
+    "actionItems": [
+      {
+        "text": "Fix the recording upload retry bug and merge it",
+        "assigneeName": "Grace Hopper",
+        "dueDate": "2026-09-18"
+      },
+      {
+        "text": "Write up a spike on the Google Calendar OAuth flow, including refresh-token storage",
+        "assigneeName": "Ada Lovelace",
+        "dueDate": "2026-09-16"
+      },
+      {
+        "text": "Rewrite the onboarding checklist copy so the invite step comes first",
+        "assigneeName": "Alan Turing",
+        "dueDate": null
+      },
+      {
+        "text": "Send the sprint goals to stakeholders",
+        "assigneeName": "Demo User",
+        "dueDate": "2026-09-14"
+      }
+    ]
+  }
+}

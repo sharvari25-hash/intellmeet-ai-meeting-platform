@@ -10,6 +10,7 @@ import {
   DEMO_TEAM_NAME,
   DEMO_TEAM_SLUG,
 } from '../modules/demo/demo.constants.js';
+import { seedDemoMeetings } from '../modules/demo/demo.meetings.js';
 import { Team } from '../modules/teams/team.model.js';
 import { User } from '../modules/users/user.model.js';
 
@@ -21,8 +22,8 @@ import { User } from '../modules/users/user.model.js';
  * upserts by email and team slug, so it is safe to run repeatedly and safe to
  * point at the production database after a deploy.
  *
- * Meetings, insights and tasks are added to this script in Phases 3, 6 and 8,
- * when those models exist.
+ * Phase 6 adds three past meetings with transcripts and AI insights (from
+ * `server/fixtures/`). Tasks follow in Phase 8, when that model exists.
  */
 
 async function upsertUser(name: string, email: string, passwordHash: string, isDemo: boolean) {
@@ -91,9 +92,18 @@ async function seed(): Promise<void> {
     await team.save();
   }
 
+  // Past meetings with transcripts, summaries and action items, so the demo
+  // opens onto a workspace that already has history in it.
+  const everyone = [demoUser, ...teammates].map((user) => ({
+    id: user._id.toString(),
+    name: user.name,
+  }));
+  const meetings = await seedDemoMeetings({ teamId: team._id.toString(), people: everyone });
+
   logger.info(
     {
       demoEmail,
+      seededMeetings: meetings,
       demoPassword: DEMO_PASSWORD,
       team: team.name,
       slug: team.slug,
@@ -105,7 +115,10 @@ async function seed(): Promise<void> {
   // Printed rather than logged so it is readable even with LOG_LEVEL=silent.
   console.log(`\nDemo login:  ${demoEmail} / ${DEMO_PASSWORD}`);
   console.log(`Or call:     POST /api/auth/demo  (no credentials needed)`);
-  console.log(`Team:        ${team.name} (${team.slug}), ${team.members.length} members\n`);
+  console.log(`Team:        ${team.name} (${team.slug}), ${team.members.length} members`);
+  console.log(
+    `Meetings:    ${meetings.created} created, ${meetings.updated} refreshed (sample history with AI summaries)\n`,
+  );
 }
 
 seed()
