@@ -18,13 +18,13 @@ import { z } from 'zod';
  */
 loadDotenv({ path: path.resolve(import.meta.dirname, '../../.env'), quiet: true });
 
-/**
- * Environment contract for the server.
- *
- * Working rule: validate at the edge. Config is the very first edge, so the
- * process refuses to boot with a bad/missing variable rather than throwing a
- * confusing `undefined` error somewhere deep in a request handler later.
- */
+/** Splits a comma-separated env value into a trimmed, non-empty list. */
+const toList = (value: string): string[] =>
+  value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 /**
  * An optional variable that may legitimately be present but blank.
  *
@@ -39,6 +39,13 @@ const optionalEnvString = z.preprocess(
   z.string().min(1).optional(),
 );
 
+/**
+ * Environment contract for the server.
+ *
+ * Working rule: validate at the edge. Config is the very first edge, so the
+ * process refuses to boot with a bad/missing variable rather than throwing a
+ * confusing `undefined` error somewhere deep in a request handler later.
+ */
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
@@ -46,15 +53,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(5000),
 
   // Comma-separated allowlist -> string[]. Consumed by the CORS middleware.
-  CORS_ORIGINS: z
-    .string()
-    .default('http://localhost:5173')
-    .transform((value) =>
-      value
-        .split(',')
-        .map((origin) => origin.trim())
-        .filter(Boolean),
-    ),
+  CORS_ORIGINS: z.string().default('http://localhost:5173').transform(toList),
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 
@@ -88,6 +87,26 @@ const envSchema = z.object({
   /** Refresh-token lifetime in days, and therefore the maximum idle session length. */
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
+  /**
+   * How long after a refresh token is rotated a replay is still treated as a
+   * concurrent refresh rather than theft.
+   *
+   * Two browser tabs each run their own JavaScript context, so they refresh
+   * independently and will race; without a window, opening a second tab looks
+   * exactly like a stolen token. The cost is that a genuinely stolen token is
+   * accepted for this long after rotation. Set to 0 to disable.
+   */
+  REFRESH_REUSE_GRACE_MS: z.coerce.number().int().min(0).default(10_000),
+
+  /**
+   * Maximum refresh tokens retained per account, oldest pruned first.
+   *
+   * Bounds the document size of heavily shared accounts - above all the demo
+   * user, which every reviewer signs into. Signing in more times than this
+   * silently ends the oldest session.
+   */
+  MAX_SESSIONS_PER_USER: z.coerce.number().int().min(1).max(200).default(20),
+
   // bcrypt work factor. 12 is the production default (~350ms per hash on this
   // hardware); the test environment lowers it, since hundreds of hashes at
   // cost 12 would add minutes to the suite for no extra assurance.
@@ -105,6 +124,26 @@ const envSchema = z.object({
 
   /** Base URL of the web client, used to build shareable invite links. */
   CLIENT_URL: z.string().default('http://localhost:5173'),
+
+  // --- WebRTC ICE servers ---------------------------------------------------
+
+  /**
+   * STUN servers. Google's are free and public; STUN only reveals a peer's own
+   * public address, so there is no credential and no bandwidth cost.
+   */
+  STUN_URLS: z
+    .string()
+    .default('stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302')
+    .transform(toList),
+
+  /**
+   * TURN relay (Metered's free tier). Optional: without it, calls still work
+   * on most networks but fail behind symmetric NATs and strict firewalls.
+   * The credential is served per call from the backend and never bundled.
+   */
+  TURN_URLS: optionalEnvString.pipe(z.string().transform(toList).optional()),
+  TURN_USERNAME: optionalEnvString,
+  TURN_CREDENTIAL: optionalEnvString,
 });
 
 export type Env = z.infer<typeof envSchema>;
