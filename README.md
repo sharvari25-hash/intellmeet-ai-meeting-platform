@@ -2,7 +2,7 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 0 (scaffold & tooling) complete.
+**Status:** 🚧 In development — Phase 1 (backend foundation) complete.
 
 ---
 
@@ -20,9 +20,9 @@
 | --- | --- |
 | Monorepo | npm workspaces (`client/`, `server/`, `shared/`) |
 | Frontend | React 19, TypeScript, Vite 7, Tailwind CSS v4, shadcn/ui, lucide-react |
-| Backend | Node.js 22 LTS, Express 5, TypeScript |
-| Database | MongoDB Atlas + Mongoose *(Phase 1)* |
-| Cache / jobs | Redis + BullMQ *(Phase 1/6)* |
+| Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
+| Database | MongoDB Atlas + Mongoose |
+| Cache / jobs | Redis (ioredis) + BullMQ *(Phase 6)* |
 | Real-time | Socket.io + WebRTC mesh *(Phase 3/5)* |
 | AI | Groq (Whisper + Llama), Gemini fallback, Mock provider *(Phase 6)* |
 | Testing | Vitest, Supertest, React Testing Library, Playwright |
@@ -45,7 +45,7 @@ npm install
 cp server/.env.example server/.env
 cp client/.env.example client/.env
 
-# 3. (Optional, needed from Phase 1) start MongoDB + Redis
+# 3. Start MongoDB + Redis (required - the API will not boot without them)
 docker compose up -d
 
 # 4. Run the client and the API together
@@ -55,7 +55,8 @@ npm run dev
 | URL | What |
 | --- | --- |
 | <http://localhost:5173> | Web client (Vite) |
-| <http://localhost:5000/api/health> | API health endpoint |
+| <http://localhost:5000/api/health> | Liveness + per-dependency status (always 200) |
+| <http://localhost:5000/api/health/ready> | Readiness (503 if Mongo or Redis is down) |
 
 The client calls the API on the **same-origin `/api` path**. In development Vite
 proxies that path to `localhost:5000`; in production `client/vercel.json`
@@ -75,6 +76,26 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm run format:check` | Prettier check (used in CI) |
 
 Target a single workspace with `-w`, e.g. `npm run test -w @intellmeet/server`.
+Server coverage: `npm run test:coverage -w @intellmeet/server`.
+
+## API error format
+
+Every non-2xx response has the same body, so the client needs one error path:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Request validation failed",
+    "details": [{ "path": "body.email", "message": "Invalid email" }],
+    "requestId": "9f139dc7-5135-482b-9846-7f18fa812fc0"
+  }
+}
+```
+
+`code` is one of ten stable values defined in `shared/src/errors.ts` — switch on
+it rather than on the message. `requestId` matches the `X-Request-Id` response
+header and the server logs for that request.
 
 ## Repository layout
 
