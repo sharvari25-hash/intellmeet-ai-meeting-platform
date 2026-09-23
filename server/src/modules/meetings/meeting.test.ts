@@ -391,3 +391,93 @@ describe('meeting cache', () => {
     expect(after.body.meeting.title).toBe('Renamed properly');
   });
 });
+
+describe('meeting_started notifications', () => {
+  /** Titles of every `meeting_started` notification sitting in a user's bell. */
+  async function startedNotifications(user: TestUser): Promise<string[]> {
+    const response = await request(app)
+      .get('/api/notifications')
+      .set('Authorization', bearer(user))
+      .expect(200);
+
+    return (response.body.notifications as { type: string; body: string }[])
+      .filter((notification) => notification.type === 'meeting_started')
+      .map((notification) => notification.body);
+  }
+
+  it('tells the rest of the team when a meeting is created already live', async () => {
+    const { host, member, teamId } = await teamWithTwoMembers();
+
+    await createMeeting(host, teamId, { title: 'Incident bridge' });
+
+    expect(await startedNotifications(member)).toEqual(['"Incident bridge" has started']);
+  });
+
+  it('does not notify the host about their own meeting', async () => {
+    const { host, teamId } = await teamWithTwoMembers();
+
+    await createMeeting(host, teamId, { title: 'Incident bridge' });
+
+    expect(await startedNotifications(host)).toEqual([]);
+  });
+
+  it('stays quiet when the meeting is only scheduled', async () => {
+    const { host, member, teamId } = await teamWithTwoMembers();
+
+    await createMeeting(host, teamId, {
+      title: 'Next week',
+      scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+
+    expect(await startedNotifications(member)).toEqual([]);
+  });
+
+  it('notifies when the host starts a scheduled meeting', async () => {
+    const { host, member, teamId } = await teamWithTwoMembers();
+    const meeting = await createMeeting(host, teamId, {
+      title: 'Sprint review',
+      scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+
+    await request(app)
+      .post(`/api/meetings/${meeting.id}/start`)
+      .set('Authorization', bearer(host))
+      .expect(200);
+
+    expect(await startedNotifications(member)).toEqual(['"Sprint review" has started']);
+  });
+
+  it('does not notify twice when start is called again', async () => {
+    const { host, member, teamId } = await teamWithTwoMembers();
+    const meeting = await createMeeting(host, teamId, {
+      title: 'Sprint review',
+      scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+
+    // A double-clicked Start button, or a client that retried the request.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await request(app)
+        .post(`/api/meetings/${meeting.id}/start`)
+        .set('Authorization', bearer(host))
+        .expect(200);
+    }
+
+    expect(await startedNotifications(member)).toHaveLength(1);
+  });
+
+  it('carries enough payload for the bell to link into the room', async () => {
+    const { host, member, teamId } = await teamWithTwoMembers();
+    const meeting = await createMeeting(host, teamId, { title: 'Incident bridge' });
+
+    const response = await request(app)
+      .get('/api/notifications')
+      .set('Authorization', bearer(member))
+      .expect(200);
+
+    expect(response.body.notifications[0].payload).toMatchObject({
+      meetingId: meeting.id,
+      teamId,
+      roomCode: meeting.roomCode,
+    });
+  });
+});

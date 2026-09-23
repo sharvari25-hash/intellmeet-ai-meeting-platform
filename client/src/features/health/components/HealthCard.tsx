@@ -30,11 +30,12 @@ function DependencyRow({ name, health }: { name: string; health: DependencyHealt
 }
 
 /**
- * Phase 0/1 proof-of-wiring: the client fetches the server's health endpoint
- * through the same-origin /api path and renders the parsed result, including
- * the per-dependency status the server reports for MongoDB and Redis.
- * Replaced by the real dashboard in Phase 4; the data-fetching moves to
- * TanStack Query at the same time.
+ * Live status of the API and its dependencies.
+ *
+ * Built in Phase 1 to prove the client/server wiring; it now lives on the
+ * settings page, where "is the backend up?" is a genuinely useful thing for
+ * an operator - or a reviewer running this locally - to be able to check
+ * without opening a terminal.
  */
 export function HealthCard() {
   const [state, setState] = useState<State>({ kind: 'loading' });
@@ -63,7 +64,7 @@ export function HealthCard() {
   return (
     <section
       aria-labelledby="health-heading"
-      className="w-full max-w-md rounded-xl border bg-card p-6 text-card-foreground shadow-sm"
+      className="w-full rounded-xl border bg-card p-6 text-card-foreground shadow-sm"
     >
       <header className="mb-4 flex items-center gap-2">
         <Activity aria-hidden="true" className="size-5 text-primary" />

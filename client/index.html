@@ -1,14 +1,35 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#5b4cf0" />
     <meta
       name="description"
       content="IntellMeet - AI-powered meetings with automatic transcripts, summaries and action items."
     />
-    <title>IntellMeet</title>
+    <title>IntellMeet - AI-powered meetings</title>
+    <script>
+      // Applies the saved theme before first paint. Without this the page
+      // renders in the default theme and then snaps to the chosen one, which
+      // is the flash every dark-mode implementation has to solve somewhere.
+      // Deliberately inline and blocking: a deferred script runs too late.
+      (function () {
+        try {
+          var stored = localStorage.getItem('intellmeet-theme');
+          var dark =
+            stored === 'dark' ||
+            ((stored === 'system' || !stored) &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', dark);
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (error) {
+          // Blocked storage (private mode, hardened settings) is not fatal:
+          // the app falls back to the default theme.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

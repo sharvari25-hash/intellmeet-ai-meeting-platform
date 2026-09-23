@@ -296,21 +296,36 @@ export async function updateMeeting(
   return toMeetingDto(meeting, userId);
 }
 
-export async function startMeeting(meetingId: string, userId: string): Promise<MeetingDto> {
+/**
+ * Outcome of a start request.
+ *
+ * `started` distinguishes "this call took the meeting live" from "it was
+ * already live", which the idempotent path below makes indistinguishable from
+ * the returned DTO alone. The caller needs that to decide whether to notify
+ * the team: a double-clicked Start button must not notify twice.
+ */
+export interface StartMeetingResult {
+  meeting: MeetingDto;
+  started: boolean;
+}
+
+export async function startMeeting(meetingId: string, userId: string): Promise<StartMeetingResult> {
   const meeting = await getMeetingForHost(meetingId, userId);
 
   if (meeting.status === 'ended') throw AppError.conflict('That meeting has already ended');
 
   // Idempotent: starting a live meeting is a no-op rather than an error, so a
   // double-click or a retried request does not surface a scary message.
-  if (meeting.status === 'scheduled') {
+  const started = meeting.status === 'scheduled';
+
+  if (started) {
     meeting.status = 'live';
     meeting.startedAt = new Date();
     await meeting.save();
     await invalidateMeeting(meeting);
   }
 
-  return toMeetingDto(meeting, userId);
+  return { meeting: await toMeetingDto(meeting, userId), started };
 }
 
 export async function endMeeting(meetingId: string, userId: string): Promise<MeetingDto> {

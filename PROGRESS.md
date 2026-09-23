@@ -5,6 +5,177 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 4 — Frontend Foundation ✅
+
+**Completed:** 2026-09-24
+
+### Phase 3 follow-up: `meeting_started` fired from REST
+
+Phase 3 left the helper written but never called. It now runs on both paths
+that take a meeting live:
+
+- **`POST /api/meetings`** without a `scheduledAt` — the "start now" flow, which
+  creates the meeting already `live`.
+- **`POST /api/meetings/:id/start`** — but only on the actual transition.
+
+`startMeeting` is idempotent, so the DTO alone cannot tell "this call started
+it" from "it was already live". It now returns `{ meeting, started }`, and the
+controller notifies only when `started` is true — otherwise a double-clicked
+Start button, or a client that retried, would notify the whole team twice.
+
+`notifyMeetingStarted` moved out of `sockets/socket.handlers.ts` (where it was
+dead code) into `modules/meetings/meeting.notify.ts`, next to its only caller.
+The dependency runs one way — the meetings module reaches for `getIo()`, and
+nothing in `sockets/` imports this file — so there is no cycle. Persistence and
+delivery stay separate: the rows are written first, so someone who was offline
+still finds the notification in the bell, and the socket push is best-effort on
+top. Nothing in it can throw, because the meeting really did start.
+
+### Built
+
+- **Router** with three zones: public (`/`, `/join/:code`), public-only
+  (`/login`, `/register`) and protected (`/app/*`), each with its own guard.
+- **API client** — bearer token from memory, one refresh-and-retry on a 401,
+  concurrent refreshes funnelled into a single request, every response parsed
+  with the shared zod schema, every failure surfaced as a typed `ApiError`.
+- **Socket singleton** that connects when a session exists, re-reads the token
+  on every reconnection, and is torn down on sign-out.
+- **App shell** — persistent rail from `md` up, slide-in sheet below, with a
+  notifications bell (live over the socket) and a light/dark/system theme
+  toggle.
+- **Auth pages** on the shared zod schemas, with inline field errors, loading
+  states and a demo shortcut.
+- **Landing page** — hero, four usage steps, feature grid and two "Try Live
+  Demo" buttons.
+- **Team pages** — create, join by code, members list, invite link with a copy
+  button, role changes and member removal.
+- **Settings** — display name, theme, and the Phase 1 health card as a system
+  status panel.
+- Toasts, an error boundary, skeleton loaders, a 404 page, and honest
+  "arriving in Phase N" placeholders for the routes later phases fill in.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Access token in a plain variable, never in localStorage** | localStorage is readable by any script on the origin, so one XSS hands an attacker a token they can use from their own machine. Memory dies with the tab; the httpOnly refresh cookie - which script cannot read at all - is what survives a reload. |
+| **Single-flight refresh** | A dashboard mounting four queries gets four simultaneous 401s the moment the token expires. Four parallel refreshes with the same cookie means the first rotates it and the other three look exactly like a replayed token. One promise, three awaits. |
+| **Exactly one retry after a refresh** | If the second attempt is also unauthorised, the account lost access rather than the token expiring. Looping would only delay telling the user. |
+| **Auth endpoints opt out of refresh-and-retry** | A 401 from `/login` means the password was wrong. Refreshing in response would hide the real failure behind a second, more confusing one. |
+| **`refreshSession` resolves, never rejects** | The startup bootstrap calls it without a catch. A rejected promise on a dropped connection would strand the store on `bootstrapping` and spin every protected route forever, for what is usually a two-second network blip. |
+| **A three-way auth status, not a boolean** | `bootstrapping` is the state before the first refresh settles. Without it, a hard reload bounces a signed-in user to /login for a few hundred milliseconds and loses the page they were on. |
+| **The socket lives in a store, not a module variable** | React runs effects bottom-up, so the notification bell's effect runs *before* the shell above it connects. Reading a module variable at that moment gives null and the listener is never attached - a bug that only shows up as "notifications work after a refresh". A store is a value components can depend on. |
+| **`auth` passed to socket.io as a function** | It is re-evaluated on every reconnection, so a socket that drops while the token is expiring comes back with the current one. An object literal here is the classic cause of "reconnects, then immediately fails auth". |
+| **Route guards are convenience, not security** | Every protected route's data comes from an endpoint that checks the bearer token itself. A user who edits past the guard sees an empty shell and a stack of 401s. |
+| **The signed-in half of the app is a lazy chunk** | The landing page is the first thing every reviewer downloads and needs none of the dashboard. Keeping `useSocketLifecycle` in the shell rather than the root also keeps socket.io-client out of the public bundle entirely. |
+| **Theme as a store, with a blocking inline script in `index.html`** | A deferred script runs after first paint, which is the flash of the wrong theme every dark-mode implementation has to solve somewhere. A store also avoids the provider-plus-hook pattern that breaks Fast Refresh. |
+| **"System" is a real third theme option** | A two-state toggle silently overrides the OS schedule the first time it is pressed. |
+| **Query cache cleared on sign-in and sign-out** | Nothing cached belongs to the account that just arrived. |
+| **Logout uses `onSettled`, not `onSuccess`** | If the network call fails the user still asked to sign out. A half-signed-in state is worse than a refresh token that outlives the tab by a few minutes. |
+| **Mutations never retry** | A retried mutation is a duplicate write. The user can press the button again. |
+| **`refetchOnWindowFocus` off** | Most of this data also arrives over the socket, so focus refetching would duplicate work the realtime layer already does. |
+| **Placeholder routes wired now** | The navigation, the guards and the layout are exercised end to end from this phase, instead of being bolted together in Phase 5. Naming the phase keeps a placeholder from reading like a bug. |
+| **The Phase 1 health card moved to Settings rather than being deleted** | "Is the backend up?" is genuinely useful to an operator - or a reviewer running this locally - without opening a terminal. |
+
+### Accessibility
+
+Lighthouse on the production build of the landing page: **accessibility 100**,
+zero failed audits. The target was ≥ 90.
+
+What that score is actually made of: one `h1` per page, a skip link as the
+first tabbable element, `aria-label` on every icon-only button, `aria-invalid`
+plus `aria-describedby` wiring each field to its error, `role="alert"` on
+submission failures, `aria-live` regions around loading states, visible focus
+rings on every interactive element, and `aria-hidden` on decorative icons and
+the hero mock. The mobile nav is a Radix dialog rather than a hand-rolled
+drawer, so focus trapping, focus restoration and Escape-to-close come for free.
+
+### Bugs found while building
+
+1. **The notification bell would have attached its socket listener to nothing.**
+   React runs effects bottom-up, so the bell's effect ran before the shell
+   above it had connected, and `getSocket()` returned null. Found while moving
+   the socket out of the public bundle; fixed by making the socket a store
+   value the effect can depend on. It would have looked like "live
+   notifications only work after a page refresh".
+2. **A network failure during startup left the app spinning forever.**
+   `useSessionBootstrap` calls `refreshSession()` without a catch, so a
+   rejected fetch left the store on `bootstrapping` and every protected route
+   on a spinner. `performRefresh` now catches and resolves to null.
+3. **A single 691 kB bundle on the landing page.** Route-level `lazy` plus
+   moving the socket lifecycle into the shell cut the public bundle to 605 kB
+   (191 kB gzipped) and gave the signed-in app its own chunks.
+
+### Known limitations
+
+- **The public bundle is still 191 kB gzipped.** It is React, the router,
+  React Query, Radix and zod - no single culprit, and zod is the deliberate
+  price of one schema shared by client and server. Lighthouse performance is
+  82 on simulated mobile, with 520 ms of total blocking time. Revisit in
+  Phase 10.
+- **No avatar upload yet.** The signed-upload endpoint exists (Phase 2) but
+  needs Cloudinary credentials, so Settings only edits the display name.
+- **Email changes are not supported**, because changing one means re-verifying
+  it - a flow of its own rather than a field on a form.
+- **The meetings, room, tasks and analytics routes are placeholders.** They are
+  wired and guarded, but their features land in Phases 5, 7, 8 and 9.
+- **No Playwright suite yet.** Component and integration tests cover the forms,
+  the client and the routing; browser-level end-to-end arrives with the meeting
+  room in Phase 5.
+- **Presence is not surfaced in the UI.** The backend broadcasts it; the
+  participant list that consumes it is part of the meeting room.
+- The dashboard starts a meeting in the user's *first* team. A team picker
+  arrives with the meeting creation dialog in Phase 5.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **205 passed** (173 server, 32 client) |
+| Lighthouse accessibility (landing, prod build) | ✅ **100** (target ≥ 90) |
+| Lighthouse performance / best practices / SEO | 82 / 96 / 91 |
+| Horizontal overflow at 360px | ✅ none, landing and dashboard |
+| `npm run build` | ✅ all 3 workspaces |
+
+### Manual verification performed
+
+Against the real Docker MongoDB and Redis, with a socket client standing in for
+a second browser:
+
+```
+POST /auth/demo                    200, Demo User <demo@intellmeet.app>
+POST /auth/login (teammate)        200, Ada Lovelace
+GET  /teams                        1 team, "IntellMeet Demo Team", 4 members
+socket handshake (teammate)        connected, transport websocket
+POST /meetings (start now)         201, status live, code 5VF7SVS
+notify:new received live           "Meeting started" - "..." has started
+payload links to the room          { meetingId, teamId, roomCode, hostName }
+GET  /notifications (persisted)    1 meeting_started, unreadCount 1
+scheduled create sends nothing     unchanged
+POST /:id/start notifies           "... has started"
+repeat start does not re-notify    2 total after 3 more start calls
+```
+
+Headless Chrome over CDP, at a 360 px viewport:
+
+```
+landing    clientWidth 360 | scrollWidth 360 | overflowX 0 | 0 offenders
+dashboard  clientWidth 360 | scrollWidth 360 | overflowX 0 | 0 offenders
+```
+
+### Next phase
+
+**Phase 5 — Meeting Room:** the lobby with camera/mic preview and device
+selectors, a WebRTC mesh behind a `MediaTransport` interface using perfect
+negotiation, the responsive video grid with active-speaker highlighting,
+controls for mic/camera/screen share and the host's mute-all and end-meeting,
+and the side panel with chat and the participants list. The signalling backend
+and the ICE endpoint are already live from Phase 3.
+
+---
+
 ## Phase 3 — Meetings API, Socket.io, Chat, Presence, Notifications ✅
 
 **Completed:** 2026-09-23
