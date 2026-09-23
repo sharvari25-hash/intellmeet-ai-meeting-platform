@@ -1,0 +1,65 @@
+# ---- Dependencies ----
+node_modules/
+.pnp/
+.pnp.js
+.npm/
+
+# ---- Build output ----
+dist/
+build/
+out/
+.vite/
+*.tsbuildinfo
+
+# ---- Environment / secrets (NEVER commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# ---- Logs ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---- Test / coverage artifacts ----
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+
+# ---- Tooling caches ----
+.eslintcache
+.cache/
+.turbo/
+.husky/_/
+
+# ---- Deploy / platform ----
+.vercel/
+.render/
+
+# ---- Editors & OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Local data volumes (docker-compose) ----
+.docker-data/
+
+# ---- Agent / planning files: must never be committed ----
+PROJECT_PLAN.md
+intellmeet_agent_prompt.md
+.claude/
+CLAUDE.md
