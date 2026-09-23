@@ -115,6 +115,19 @@ const envSchema = z.object({
   /** Account used by `POST /api/auth/demo` so reviewers can skip signing up. */
   DEMO_EMAIL: z.string().default('demo@intellmeet.app'),
 
+  /**
+   * How long data created through the shared demo account survives.
+   *
+   * Every reviewer signs into the same account, so their teams and meetings
+   * pile up in each other's way. Six hours is long enough that nobody's
+   * session is ever swept out from under them, and short enough that the
+   * workspace is presentable again by the next morning.
+   */
+  DEMO_DATA_TTL_HOURS: z.coerce.number().min(1).max(720).default(6),
+
+  /** How often the cleanup sweep runs, in minutes. */
+  DEMO_CLEANUP_INTERVAL_MIN: z.coerce.number().int().min(5).max(1440).default(30),
+
   // --- Cloudinary (optional) ------------------------------------------------
   // The app runs fully without these; only the upload-signature endpoint is
   // disabled, and it reports SERVICE_UNAVAILABLE rather than failing obscurely.

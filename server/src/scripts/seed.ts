@@ -4,6 +4,12 @@ import { env } from '../config/env.js';
 import { generateCode } from '../lib/ids.js';
 import { logger } from '../lib/logger.js';
 import { hashPassword } from '../lib/password.js';
+import {
+  DEMO_PASSWORD,
+  DEMO_TEAMMATES,
+  DEMO_TEAM_NAME,
+  DEMO_TEAM_SLUG,
+} from '../modules/demo/demo.constants.js';
 import { Team } from '../modules/teams/team.model.js';
 import { User } from '../modules/users/user.model.js';
 
@@ -18,17 +24,6 @@ import { User } from '../modules/users/user.model.js';
  * Meetings, insights and tasks are added to this script in Phases 3, 6 and 8,
  * when those models exist.
  */
-
-const DEMO_PASSWORD = 'DemoPassword123';
-
-const TEAMMATES = [
-  { name: 'Ada Lovelace', email: 'ada@intellmeet.app', role: 'admin' as const },
-  { name: 'Grace Hopper', email: 'grace@intellmeet.app', role: 'member' as const },
-  { name: 'Alan Turing', email: 'alan@intellmeet.app', role: 'member' as const },
-];
-
-const DEMO_TEAM_NAME = 'IntellMeet Demo Team';
-const DEMO_TEAM_SLUG = 'intellmeet-demo';
 
 async function upsertUser(name: string, email: string, passwordHash: string, isDemo: boolean) {
   const existing = await User.findOne({ email });
@@ -54,7 +49,7 @@ async function seed(): Promise<void> {
   const demoUser = await upsertUser('Demo User', demoEmail, passwordHash, true);
 
   const teammates = await Promise.all(
-    TEAMMATES.map((mate) => upsertUser(mate.name, mate.email, passwordHash, false)),
+    DEMO_TEAMMATES.map((mate) => upsertUser(mate.name, mate.email, passwordHash, false)),
   );
 
   let team = await Team.findOne({ slug: DEMO_TEAM_SLUG });
@@ -68,7 +63,7 @@ async function seed(): Promise<void> {
         { userId: demoUser._id, role: 'admin', joinedAt: new Date() },
         ...teammates.map((mate, index) => ({
           userId: mate._id,
-          role: TEAMMATES[index]?.role ?? 'member',
+          role: DEMO_TEAMMATES[index]?.role ?? 'member',
           joinedAt: new Date(),
         })),
       ],
@@ -89,7 +84,7 @@ async function seed(): Promise<void> {
       if (existingIds.has(mate._id.toString())) continue;
       team.members.push({
         userId: new Types.ObjectId(mate._id),
-        role: TEAMMATES[index]?.role ?? 'member',
+        role: DEMO_TEAMMATES[index]?.role ?? 'member',
         joinedAt: new Date(),
       });
     }

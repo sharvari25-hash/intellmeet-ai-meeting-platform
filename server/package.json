@@ -14,7 +14,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "seed": "tsx src/scripts/seed.ts",
-    "seed:prod": "node dist/scripts/seed.js"
+    "seed:prod": "node dist/scripts/seed.js",
+    "demo:cleanup": "tsx src/scripts/demoCleanup.ts",
+    "demo:cleanup:prod": "node dist/scripts/demoCleanup.js"
   },
   "dependencies": {
     "@intellmeet/shared": "*",
