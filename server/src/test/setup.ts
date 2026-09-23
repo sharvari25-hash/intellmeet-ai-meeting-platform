@@ -14,6 +14,7 @@ process.env.MONGODB_URI = inject('mongoUri');
 
 const { connectMongo, disconnectMongo } = await import('../config/db.js');
 const { setRedisClient } = await import('../config/redis.js');
+const { resetRateLimits } = await import('../middleware/rateLimit.js');
 const mongoose = (await import('mongoose')).default;
 
 /**
@@ -35,10 +36,14 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  // Isolate test files from each other: drop every document but keep the
+  // Isolate tests from each other: drop every document but keep the
   // collections and their indexes, which is much faster than a full dropDatabase.
   const collections = mongoose.connection.collections;
   await Promise.all(Object.values(collections).map((collection) => collection.deleteMany({})));
+
+  // Rate-limit counters are module-level state that would otherwise leak into
+  // the next test and 429 it for no reason.
+  resetRateLimits();
 });
 
 afterAll(async () => {

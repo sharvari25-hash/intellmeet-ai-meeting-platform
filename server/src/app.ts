@@ -7,7 +7,11 @@ import { httpLogger } from './middleware/httpLogger.js';
 import { notFound } from './middleware/notFound.js';
 import { requestId } from './middleware/requestId.js';
 import { mongoSanitize, preventParameterPollution } from './middleware/sanitize.js';
+import { authRouter } from './modules/auth/auth.routes.js';
 import { healthRouter } from './modules/health/health.routes.js';
+import { teamRouter } from './modules/teams/team.routes.js';
+import { uploadRouter } from './modules/uploads/upload.routes.js';
+import { userRouter } from './modules/users/user.routes.js';
 
 /**
  * Builds the Express application.
@@ -62,6 +66,10 @@ export function createApp(): Express {
   app.use(preventParameterPollution());
 
   app.use('/api/health', healthRouter);
+  app.use('/api/auth', authRouter);
+  app.use('/api/users', userRouter);
+  app.use('/api/teams', teamRouter);
+  app.use('/api/uploads', uploadRouter);
 
   app.use(notFound);
   app.use(errorHandler);

@@ -62,7 +62,14 @@ export function toAppError(error: unknown): AppError {
     }
   }
 
-  return AppError.internal('Internal server error', { cause: error });
+  // Keep the original message. It is masked before it reaches the client in
+  // production (see `isClientSafe` in the handler below), but preserving it
+  // means a development or test failure reports what actually went wrong
+  // instead of a uniformly useless "Internal server error".
+  return AppError.internal(
+    error instanceof Error && error.message ? error.message : 'Internal server error',
+    { cause: error },
+  );
 }
 
 /**

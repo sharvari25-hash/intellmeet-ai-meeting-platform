@@ -1,0 +1,20 @@
+# Normalise line endings: LF in the repo, regardless of platform.
+# Keeps diffs clean between Windows dev machines and Linux CI/Docker.
+* text=auto eol=lf
+
+# Binary assets must never be normalised.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.mp3 binary
+*.mp4 binary
+*.webm binary
+*.pdf binary
+
+# Lockfile: keep diffs collapsed in review tooling.
+package-lock.json -diff
