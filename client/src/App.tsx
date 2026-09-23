@@ -41,6 +41,11 @@ const TeamDetailPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('@/features/settings/SettingsPage').then((module) => ({ default: module.SettingsPage })),
 );
+// The room carries the WebRTC stack with it, so it is its own chunk: nobody
+// downloads a mesh transport to read the dashboard.
+const RoomPage = lazy(() =>
+  import('@/features/room/RoomPage').then((module) => ({ default: module.RoomPage })),
+);
 
 /**
  * The route tree.
@@ -95,15 +100,7 @@ export default function App() {
               </ComingSoon>
             }
           />
-          <Route
-            path="room/:roomCode"
-            element={
-              <ComingSoon title="Meeting room" phase="Phase 5">
-                Video, screen share, chat and the participant list. The signalling backend is
-                already live.
-              </ComingSoon>
-            }
-          />
+          <Route path="room/:roomCode" element={<RoomPage />} />
           <Route
             path="tasks"
             element={

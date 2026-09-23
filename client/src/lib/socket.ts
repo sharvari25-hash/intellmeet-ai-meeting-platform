@@ -16,10 +16,32 @@ import { refreshSession } from './apiClient';
  * Tearing the socket down lives on the store instead (`teardown`), which
  * anything can call without pulling the library in.
  */
+
+/**
+ * Where the socket connects.
+ *
+ * Production needs an absolute URL, because the client is on Vercel and the
+ * API is on Render, and a Vercel rewrite cannot carry a WebSocket upgrade.
+ * Development uses the same origin and lets Vite proxy it - which is also the
+ * only thing that works in the HTTPS dev mode used for phone testing, since an
+ * https page is not allowed to open a plain `ws://` connection and would fail
+ * as mixed content.
+ */
+function socketUrl(): string {
+  const configured = import.meta.env.VITE_SOCKET_URL;
+  const insecure = configured?.startsWith('http://');
+
+  if (!configured || (window.location.protocol === 'https:' && insecure)) {
+    return window.location.origin;
+  }
+
+  return configured;
+}
+
 export function connectSocket(): void {
   if (useSocketStore.getState().socket) return;
 
-  const socket = io(import.meta.env.VITE_SOCKET_URL ?? window.location.origin, {
+  const socket = io(socketUrl(), {
     transports: ['websocket', 'polling'],
     withCredentials: true,
     /**

@@ -2,10 +2,25 @@ import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import basicSsl from '@vitejs/plugin-basic-ssl';
+
+/**
+ * Optional HTTPS dev mode, for testing the meeting room from a phone.
+ *
+ * Browsers only expose `getUserMedia` in a secure context - HTTPS, or
+ * localhost as a special case - so a phone reaching the dev server at
+ * `http://192.168.x.x:5173` has no camera API at all. `npm run dev:https`
+ * serves the same app over HTTPS with a self-signed certificate, which is
+ * enough to make the origin secure once the certificate is accepted.
+ *
+ * Off by default, because the certificate warning is an unnecessary step for
+ * anyone working on localhost.
+ */
+const useHttps = process.env.VITE_HTTPS === 'true';
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), ...(useHttps ? [basicSsl()] : [])],
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
@@ -13,6 +28,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Bind to every interface in HTTPS mode so a phone on the same WiFi can
+    // reach the dev server by LAN IP. Left on localhost otherwise.
+    host: useHttps,
     // Mirrors production: on Vercel, `client/vercel.json` rewrites /api/* to
     // the Render service, so the browser always sees the API as same-origin
     // (which keeps the refresh-token cookie first-party). Proxying in dev
@@ -21,6 +39,16 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_DEV_API_PROXY ?? 'http://localhost:5000',
         changeOrigin: true,
+      },
+      // Socket.io too, and this one matters more than it looks: an HTTPS page
+      // cannot open a `ws://` connection, so without a same-origin proxy the
+      // phone would load the app and then fail to connect. Vercel cannot do
+      // this in production - a rewrite will not carry a WebSocket upgrade -
+      // which is why `VITE_SOCKET_URL` exists for the deployed build.
+      '/socket.io': {
+        target: process.env.VITE_DEV_API_PROXY ?? 'http://localhost:5000',
+        changeOrigin: true,
+        ws: true,
       },
     },
   },
