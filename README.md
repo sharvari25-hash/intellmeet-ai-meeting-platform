@@ -2,8 +2,9 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 4 (frontend foundation) complete. The web
-app runs: landing page, demo sign-in, dashboard, teams and invites.
+**Status:** 🚧 In development — Phase 5 (meeting room) complete. Real WebRTC
+video meetings work end to end: lobby, mesh video, screen share, chat and host
+controls.
 
 ---
 
@@ -26,7 +27,7 @@ app runs: landing page, demo sign-in, dashboard, teams and invites.
 | Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
 | Database | MongoDB Atlas + Mongoose |
 | Cache / jobs | Redis (ioredis) + BullMQ *(Phase 6)* |
-| Real-time | Socket.io (+ Redis adapter); WebRTC mesh client *(Phase 5)* |
+| Real-time | Socket.io (+ Redis adapter); WebRTC mesh (perfect negotiation) |
 | AI | Groq (Whisper + Llama), Gemini fallback, Mock provider *(Phase 6)* |
 | Testing | Vitest, Supertest, React Testing Library, Playwright |
 | Tooling | ESLint 9 (flat config), Prettier, Husky, lint-staged, commitlint |
@@ -84,6 +85,8 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm run lint:fix` | ESLint with autofix |
 | `npm run typecheck` | `tsc --noEmit` in every workspace |
 | `npm test` | Vitest suites in every workspace |
+| `npm run test:e2e` | Playwright: two browsers in one meeting (needs Docker + seed) |
+| `npm run dev:https` | Dev over HTTPS on the LAN, for testing from a phone |
 | `npm run format` | Prettier write |
 | `npm run format:check` | Prettier check (used in CI) |
 
@@ -160,7 +163,8 @@ Signalling is relayed without being parsed — media never touches the server.
 | `/app` | protected | Dashboard — start a meeting, join by code, recent meetings |
 | `/app/teams`, `/app/teams/:id` | protected | Create/join a team, members, invite link |
 | `/app/settings` | protected | Display name, theme, backend health |
-| `/app/meetings`, `/app/room/:code`, `/app/tasks`, `/app/analytics` | protected | Wired and guarded; their features land in Phases 5–9 |
+| `/app/room/:code` | protected | **Meeting room** — lobby, mesh video, screen share, chat |
+| `/app/meetings`, `/app/tasks`, `/app/analytics` | protected | Wired and guarded; their features land in Phases 7–9 |
 
 **Client auth.** The access token lives in a plain JavaScript variable — never
 in `localStorage`, which any script on the origin can read. A hard reload
@@ -173,6 +177,61 @@ of the same cookie would look exactly like a replayed token to the server.
 
 The signed-in half of the app is a lazy chunk, so a visitor reading the landing
 page never downloads the dashboard or socket.io-client.
+
+## Meeting room
+
+Video is a **WebRTC mesh**: one peer connection per participant, media directly
+between browsers, and the server used only to pass SDP and ICE along. It never
+sees a frame. That keeps hosting free and latency low, at the cost of upstream
+bandwidth growing with the participant count — the room warns above six, and
+`docs/architecture.md` documents the LiveKit (SFU) upgrade path.
+
+Everything above the transport talks through a `MediaTransport` interface, so
+swapping the mesh for an SFU replaces one class and leaves the UI untouched.
+
+**Testing it from a phone.** Browsers only allow camera and microphone access
+in a secure context — HTTPS, or localhost. A phone opening
+`http://192.168.x.x:5173` has no camera API at all:
+
+```bash
+npm run dev:https          # self-signed HTTPS, bound to every interface
+```
+
+Open `https://<your-laptop-ip>:5173` on the phone and accept the certificate
+warning once. A self-signed certificate was chosen over a tunnel (ngrok,
+cloudflared) because it needs no account and no third party — and, more
+importantly, because it keeps the phone on the **same LAN**, where STUN alone
+is enough. A tunnel would put the phone behind carrier-style NAT and make TURN
+a prerequisite. `PROGRESS.md` has the step-by-step script.
+
+**STUN only, for now.** `GET /api/rtc/ice-servers` reports `hasTurn: false` and
+the room shows a banner saying so. Two machines on the same WiFi, or two home
+broadband connections, connect fine — roughly 80–90% of real cases. A corporate
+or university network that blocks UDP, or somebody joining on mobile data
+behind carrier-grade NAT, will **not** connect without a relay. Add TURN before
+demonstrating on a network you do not control:
+
+```bash
+TURN_URLS=turn:standard.relay.metered.ca:80,turns:standard.relay.metered.ca:443
+TURN_USERNAME=…
+TURN_CREDENTIAL=…
+```
+
+## Demo workspace hygiene
+
+Every reviewer signs into the same demo account, so their teams and meetings
+would otherwise pile up in each other's way. The server sweeps anything the
+demo account created more than `DEMO_DATA_TTL_HOURS` (6) ago, every
+`DEMO_CLEANUP_INTERVAL_MIN` (30) minutes. The **seeded team is never removed**,
+and neither is anything recent — which is what makes the sweep safe to run
+while people are using the product, unlike a reset button that any reviewer
+could press mid-call.
+
+To clear it immediately before a demo:
+
+```bash
+npm run demo:cleanup -w @intellmeet/server -- 0
+```
 
 **Auth model.** The access token is a 15-minute JWT returned in the response
 body and held in memory by the client. It is sent as `Authorization: Bearer …`
@@ -257,7 +316,7 @@ npm run prepare   # points git at .husky/
 ## Roadmap
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
-Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ·
+Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
 Phase 6 recording + AI · Phase 7 history · Phase 8 Kanban · Phase 9 analytics ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.

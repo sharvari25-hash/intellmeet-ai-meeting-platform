@@ -1,31 +1,27 @@
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { AuthResponse, LoginInput, RegisterInput } from '@intellmeet/shared';
+import { peekPendingInvite } from '@/features/teams/pendingInvite';
 import { useAuthStore } from '@/stores/authStore';
 import { useSocketStore } from '@/stores/socketStore';
 import * as authApi from './auth.api';
-
-/** Where to land after signing in, honouring the page the user was aiming for. */
-function useRedirectTarget(): string {
-  const location = useLocation();
-  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
-
-  // Only same-origin paths from our own router state are honoured; anything
-  // else would be an open redirect.
-  return from?.startsWith('/') ? from : '/app';
-}
+import { postAuthPath } from './postAuthPath';
 
 function useOnSignedIn(): (result: AuthResponse) => void {
   const setSession = useAuthStore((state) => state.setSession);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const target = useRedirectTarget();
+  const location = useLocation();
 
   return (result) => {
     setSession(result.user, result.accessToken);
     // Nothing cached belongs to the account that just signed in.
     queryClient.clear();
-    navigate(target, { replace: true });
+
+    // Peeked, not consumed: PublicOnlyRoute reaches the same decision in the
+    // same commit, and clearing the code here would leave it with nothing to
+    // read. The join page clears it once it has actually tried to redeem it.
+    navigate(postAuthPath(location.state, peekPendingInvite()), { replace: true });
   };
 }
 

@@ -26,6 +26,10 @@ beforeEach(() => {
   // chance to be restored, which is not how the app behaves.
   useAuthStore.setState({ status: 'bootstrapping', user: null, accessToken: null });
   resetRefreshState();
+
+  // A parked invite code outlives a test otherwise, and would redirect the
+  // next one somewhere it never asked to go.
+  sessionStorage.clear();
 });
 
 // React Testing Library does not auto-clean when `globals: true` is combined

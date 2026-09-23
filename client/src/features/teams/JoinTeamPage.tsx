@@ -7,6 +7,7 @@ import { Spinner } from '@/components/Spinner';
 import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/apiClient';
 import { useAuthStore } from '@/stores/authStore';
+import { clearPendingInvite, rememberInvite } from './pendingInvite';
 import { joinTeam, teamKeys } from './teams.api';
 
 function Frame({ children }: { children: React.ReactNode }) {
@@ -51,8 +52,23 @@ export function JoinTeamPage() {
   const { mutate } = join;
 
   useEffect(() => {
-    if (status !== 'authenticated' || attempted.current || !code) return;
+    if (!code) return;
+
+    // Park the code before sending them off to sign up. Router state carries
+    // it back for anyone who uses the buttons below, but not for someone who
+    // reaches the form another way, and the promise on this page - "you will
+    // join it automatically" - has to hold either way.
+    if (status === 'anonymous') {
+      rememberInvite(code);
+      return;
+    }
+
+    if (status !== 'authenticated' || attempted.current) return;
+
     attempted.current = true;
+    // Cleared on the attempt, not on success: a code that cannot be redeemed
+    // must not follow the user into every future sign-in on this tab.
+    clearPendingInvite();
     mutate();
   }, [status, code, mutate]);
 

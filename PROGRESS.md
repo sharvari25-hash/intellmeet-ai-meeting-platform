@@ -5,6 +5,299 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 5 — Meeting Room (Real-Time Video Core) ✅
+
+**Completed:** 2026-09-24
+
+### Phase 4 follow-up 1: invite links lost the code after signing in
+
+**Symptom:** opening `/join/CODE` while signed out, then pressing "Sign in" or
+"Create an account", landed on `/app` without joining — although the page
+promised "you will join it automatically". Opening the same link while already
+signed in worked.
+
+**Cause, found by reproducing it in a test rather than by reading the code.**
+The router state survived perfectly: `postAuthPath` was handed
+`{ from: { pathname: '/join/ABC234' } }` and returned the right destination.
+The problem was that *two* places redirect after a sign-in, and they disagreed:
+
+- `useOnSignedIn` navigates to the remembered page;
+- `PublicOnlyRoute` redirects because a signed-in user should not sit on
+  `/login` — and it redirected to a **hardcoded `/app`**.
+
+Both updates land in the same React commit, so whichever ran second won. The
+guard usually won, and silently overwrote the destination.
+
+**Fix, in two parts:**
+
+1. **One shared decision.** `postAuthPath(state, pendingInvite)` is now the
+   single answer to "where does a freshly signed-in user go", and both callers
+   use it. The race still happens; it is simply no longer observable, because
+   both answers are identical. The same function also closed an open redirect
+   that was there from Phase 4: `from.startsWith('/')` accepts
+   `//evil.example`, which is a protocol-relative URL to another origin.
+2. **The code is parked in `sessionStorage`.** Router state only carries the
+   invite for somebody who uses the buttons on the invite screen. Reaching the
+   sign-up form any other way — a second tab, an email link, a password manager
+   — loses it. The join page now remembers the code when it shows the
+   signed-out screen and clears it once redemption has been *attempted*, so a
+   dead code cannot follow the user into every later sign-in.
+
+Five tests cover it: both buttons, the already-signed-in path, the fresh-tab
+path, and that an unredeemable code is discarded.
+
+### Phase 4 follow-up 2: demo workspace hygiene
+
+**The problem:** every reviewer signs into the same account, so every team and
+meeting any of them creates is visible to all the others. It accumulates.
+
+**Options considered.**
+
+| Option | Why not |
+| --- | --- |
+| **A reset endpoint** | Everyone holding the demo session is the same user, so there is no way to authorise it. One reviewer pressing "reset" would delete the team another is mid-call in. |
+| **A manual reset script only** | Requires somebody watching. Reviewers arrive at unpredictable times, including overnight. |
+
+**Chosen: age-based automatic cleanup, plus a manual script for impatience.**
+
+A sweep runs in-process every `DEMO_CLEANUP_INTERVAL_MIN` (30) and deletes
+anything the demo account created more than `DEMO_DATA_TTL_HOURS` (6) ago:
+throwaway teams, their meetings, orphaned chat and stale notifications. Two
+things are never touched — the seeded team, matched by slug, and **anything
+recent**. That second rule is the whole point: it is what makes the job safe to
+run while people are using the product, which a reset button can never be.
+
+`npm run demo:cleanup -w @intellmeet/server -- 0` does the same thing
+immediately, ignoring the age, for clearing the decks right before a demo.
+
+In-process rather than a platform cron because Render's free tier has no
+scheduler and this is a handful of indexed deletes — not work that deserves its
+own service. Concurrent runs are harmless: the deletes are idempotent.
+
+*Verified live:* the workspace had accumulated a stray `demo` team and five
+abandoned meetings from earlier testing. The script removed exactly those and
+left the seeded team, its four members and every real account intact.
+
+### Built
+
+- **Lobby:** camera preview, camera and microphone pickers, a live mic level
+  meter, mute/camera toggles before joining, and the display name.
+- **WebRTC mesh** in `MeshTransport`, behind a `MediaTransport` interface: one
+  `RTCPeerConnection` per peer, perfect negotiation, ICE relayed through the
+  existing socket, ICE restart on failure, cleanup on leave and on tab close.
+- **Video grid:** responsive from one tile to eight-plus, active-speaker ring
+  driven by Web Audio, name labels, and mute/camera/screen/reconnecting
+  indicators.
+- **Controls:** microphone, camera, screen share with auto-revert, leave, and
+  the host's mute-all, mute-one and end-for-everyone.
+- **Side panel:** chat with history, typing indicator and an unread badge, and
+  a participants list with per-person host controls.
+- **Meeting creation dialog with a team picker**, replacing "start in your
+  first team", with schedule-for-later as a checkbox.
+- Copy invite link, meeting timer, STUN-only warning, mesh soft-cap warning.
+- **HTTPS dev mode** (`npm run dev:https`) so the room can be tested from a
+  phone on the same WiFi.
+- **Playwright smoke test:** two browser contexts with fake media join one
+  room, see each other's tiles and exchange chat.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Perfect negotiation rather than a "who offers first" rule** | Glare is not an edge case: starting a screen share renegotiates, and two people doing that within a second of each other is ordinary. Any fixed rule breaks when two people join in the same instant. Politeness is decided by comparing socket ids, which is deterministic and guaranteed opposite at the two ends. |
+| **`replaceTrack` for screen sharing, not remove-and-add** | The SDP is unchanged, so there is no renegotiation, no glare and no black frame while an answer comes back. Starting a share is instant for everyone rather than a visible stutter. |
+| **Toggling mutes a track; it does not stop it** | A stopped track has to be re-acquired and renegotiated with every peer — a stall, and the camera light flickering. `track.enabled = false` stops the media instantly and leaves the sender in place. |
+| **The mesh is behind a `MediaTransport` interface** | The grid, the controls and the panel know only "peers with streams". Swapping in LiveKit later replaces one class and leaves the UI untouched. Documented in `docs/architecture.md`. |
+| **ICE restart rather than rebuilding the connection** | A failed ICE connection is usually a network change — WiFi to mobile, a VPN coming up. Re-gathering on the existing connection recovers the call without the peer's tile disappearing. |
+| **Host mute is a request the client honours** | The server never touches media, so the participant's own browser stops the track. That keeps the honest "you were muted" signal instead of a server silently dropping audio. |
+| **One shared `AudioContext` for every level meter** | Browsers cap how many a document may create (Chrome allows six). A context per tile would hit the ceiling in a six-person call and then fail silently. |
+| **The mic meter writes to `style.transform`, not React state** | At 60fps a `setState` per frame would re-render the whole lobby sixty times a second to move one bar. |
+| **Active speaker polled at 300ms, not per frame** | It decides which tile gets a ring. Re-rendering the grid at 60fps for that is pure waste. |
+| **A styled native `<select>` for device pickers** | Opens the platform's own wheel or sheet on a phone — more usable, more accessible and several kilobytes lighter than a custom listbox reimplementing keyboard and touch behaviour. |
+| **Joining without a camera is allowed** | Somebody on a locked-down laptop, or who declined the camera prompt but not the microphone, can still watch and use chat. The hook falls back full → audio-only → none and says which happened. |
+| **The room is its own lazy chunk** | Nobody downloads a WebRTC mesh to read the dashboard. |
+| **The lobby owns the stream, the room borrows it** | Acquiring it once in `RoomPage` means pressing Join does not re-prompt for permission. |
+| **Screen share button hidden where unsupported** | iOS has no `getDisplayMedia` at all. Offering a button that can only fail is worse than not offering it. |
+
+### Testing from a phone: HTTPS dev mode
+
+Browsers only expose `getUserMedia` in a **secure context** — HTTPS, or
+localhost as a special case. A phone reaching `http://192.168.1.x:5173` has no
+camera API at all, which surfaces as a baffling "cannot read properties of
+undefined" rather than a permission prompt.
+
+**Options considered.**
+
+| Option | Verdict |
+| --- | --- |
+| **ngrok** | Needs an account, which the project rules say to ask about first. |
+| **cloudflared quick tunnel** | No account, but a third-party binary, and it routes all traffic through Cloudflare. It also puts the phone on the far side of carrier-style NAT, so the call would need TURN — which is not configured. |
+| **A self-signed certificate on the dev server** | Chosen. |
+
+**Chosen: `npm run dev:https`.** `@vitejs/plugin-basic-ssl` serves the existing
+dev server over HTTPS with a self-signed certificate and binds to every
+interface. No account, no third party, and — the deciding factor — the phone
+stays on the same LAN as the laptop, so the two peers find each other with STUN
+alone. A tunnel would have made TURN a prerequisite for the one scenario most
+worth testing.
+
+The catch is the certificate warning, which has to be accepted once on the
+phone. Vite also proxies `/socket.io` now, because an HTTPS page may not open a
+plain `ws://` connection: without a same-origin socket the app would load and
+then silently fail to connect.
+
+### Manual test script
+
+Both scripts assume `docker compose up -d` and `npm run seed -w
+@intellmeet/server` have been run.
+
+#### A. Two windows on one PC
+
+1. `npm run dev`.
+2. Window 1 (normal): <http://localhost:5173> → **Try Live Demo**.
+3. Window 2 (**incognito**, so it is a separate session): <http://localhost:5173>
+   → **Sign in** → `ada@intellmeet.app` / `DemoPassword123`.
+4. Window 1: **New meeting** → team *IntellMeet Demo Team* → title → **Start
+   now**. Allow camera and microphone. You land in the lobby.
+5. Window 1: check the preview, switch camera/microphone in the pickers, speak
+   and watch the level meter move. Press **Join meeting**.
+6. Window 1: **Invite** → the link is copied. Paste it into window 2.
+7. Window 2: allow permissions → **Join meeting**.
+
+   **Expect:** both windows show *2 in the room* and two tiles; each sees the
+   other's video within a couple of seconds.
+
+8. Speak in one window → the speaker's tile gets a green ring in both.
+9. Window 1: mute → window 2 shows a mic-off icon on that tile.
+10. Window 1: **Share screen** → pick a window → window 2's tile for you shows
+    the screen and a screen icon. Press the browser's own **Stop sharing** bar
+    → both revert to camera automatically.
+11. Chat: send from each side; check the typing indicator appears while the
+    other is typing, and that the **People** tab shows an unread badge on
+    **Chat** when a message arrives while you are on it.
+12. Window 1 (host): **Mute all** → window 2 is muted and told so.
+13. Window 2: **Leave** → window 1 shows *1 in the room*.
+14. Window 1: **End for all** → both see "The meeting has ended".
+15. Reload window 1 and open the meeting again → it refuses with "That meeting
+    is not available", because an ended meeting cannot be rejoined.
+
+#### B. PC plus phone, same WiFi
+
+1. Find the laptop's LAN address: `ipconfig` on Windows, `ifconfig | grep inet`
+   on macOS/Linux. It looks like `192.168.1.23`.
+2. Add it to `server/.env` so the API accepts it, then restart the API:
+
+   ```bash
+   CORS_ORIGINS=http://localhost:5173,https://192.168.1.23:5173
+   CLIENT_URL=https://192.168.1.23:5173
+   ```
+
+   (Only needed for the invite links to point at the right host; the socket and
+   REST both go through the Vite proxy, so they are same-origin.)
+
+3. `npm run dev:https` on the laptop.
+4. Laptop: <https://localhost:5173> → accept the certificate warning
+   (**Advanced → Proceed**) → **Try Live Demo** → start a meeting → join.
+5. Phone, on the **same WiFi**: open `https://192.168.1.23:5173`.
+   - Chrome: *Advanced → Proceed to 192.168.1.23 (unsafe)*.
+   - Safari: *Show details → visit this website → Visit Website*.
+6. Phone: **Sign in** as `ada@intellmeet.app` / `DemoPassword123`, then open the
+   room code from the laptop's **Invite** button.
+7. Allow camera and microphone when prompted, then **Join meeting**.
+
+   **Expect:** laptop and phone see each other. Both are on the same LAN, so
+   STUN is enough and no TURN is needed.
+
+8. Rotate the phone → the grid reflows and the controls stay reachable.
+9. Turn the phone's WiFi off and on → the tile reconnects by itself (ICE
+   restart) rather than vanishing.
+10. Note: **screen sharing is hidden on the phone**, because iOS and Android
+    browsers have no `getDisplayMedia`.
+
+**If the phone shows no camera prompt at all**, the page is not on HTTPS —
+check the URL starts `https://` and that the certificate was accepted.
+
+### STUN only: what works, and when TURN is needed
+
+`GET /api/rtc/ice-servers` currently returns Google's public STUN and
+`hasTurn: false`, and the room shows a banner saying so.
+
+**Works on STUN alone:** two laptops on one home or office WiFi; a laptop and a
+phone on the same network; most home broadband to home broadband connections.
+Roughly 80–90% of real connections.
+
+**Needs TURN:** a corporate or university network that blocks UDP; mobile data
+behind carrier-grade NAT (usually symmetric); guest WiFi with client isolation.
+
+So: **local testing and a demo over home WiFi are fine. A demo over a
+conference or corporate network, or with someone joining on 4G, is not.** Add
+TURN before presenting anywhere you do not control the network. Metered's free
+tier is 500 MB of relayed traffic a month, which is ample because only the
+connections that need it use the relay:
+
+```bash
+TURN_URLS=turn:standard.relay.metered.ca:80,turns:standard.relay.metered.ca:443
+TURN_USERNAME=<from the dashboard>
+TURN_CREDENTIAL=<from the dashboard>
+```
+
+Restart the API; `hasTurn` flips to `true` and the banner disappears. Nothing
+else changes — the endpoint has been ready since Phase 3.
+
+### Bugs found while building
+
+1. **The e2e suite's sign-in assertion was ambiguous.** It waited for an h1
+   matching "Welcome back" — which is the *sign-in page's own heading* as well
+   as the dashboard's. It passed instantly while the login request was still in
+   flight, and the next navigation cancelled it. Now it waits on the URL.
+2. **The demo account was in two teams**, so the creation dialog defaulted to
+   the wrong one and the other participant got "Team not found". Found by the
+   e2e suite; it is also precisely the debris that the new cleanup removes. The
+   spec now selects the team by name rather than trusting the default.
+
+### Known limitations
+
+- **Mesh only, soft-capped at six.** Above that the UI warns and quality
+  degrades. The LiveKit upgrade path is documented in `docs/architecture.md`.
+- **No TURN**, so restrictive networks will fail. See above for exactly when.
+- **No recording yet** — Phase 6.
+- **Screen sharing is desktop-only**, because mobile browsers have no
+  `getDisplayMedia`.
+- **No speaker (output device) selection.** `setSinkId` is not supported in
+  Safari or on Android, so a picker would be a control that silently does
+  nothing for a large share of users.
+- **Active-speaker detection is local.** Each browser measures the streams it
+  receives, so the highlight can differ by a frame between participants. A
+  server-side dominant-speaker signal needs an SFU.
+- **Chat history loads the most recent page only.** The cursor exists; infinite
+  scroll in the panel does not.
+- **The Playwright suite needs Chrome installed** (`channel: 'chrome'`),
+  because this machine could not download Playwright's bundled Chromium.
+  `npx playwright install chromium` and dropping the `channel` line switches to
+  the pinned build.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **250 passed** (183 server, 67 client** |
+| `npm run test:e2e` | ✅ **2 passed** — two browsers, real media, real mesh |
+| Server coverage | ✅ **91.7% statements**, 83.5% branches** |
+| Horizontal overflow at 360px | ✅ none, lobby and room |
+| `npm run build` | ✅ all 3 workspaces |
+
+### Next phase
+
+**Phase 6 — Recording & AI Meeting Intelligence:** mixing every audio track
+with the Web Audio API, recording with `MediaRecorder`, uploading to Cloudinary,
+and the BullMQ `process-meeting` job that transcribes with Groq Whisper,
+summarises with Llama, validates the JSON against a zod schema and retries once
+with a repair prompt, then fuzzy-matches assignees to participants.
+
+---
+
 ## Phase 4 — Frontend Foundation ✅
 
 **Completed:** 2026-09-24

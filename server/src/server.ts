@@ -4,6 +4,7 @@ import { connectMongo, disconnectMongo } from './config/db.js';
 import { env } from './config/env.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
 import { logger } from './lib/logger.js';
+import { startDemoCleanup, stopDemoCleanup } from './modules/demo/demo.cleanup.js';
 import { attachRedisAdapter, closeSocketServer, createSocketServer } from './sockets/index.js';
 
 /**
@@ -31,6 +32,10 @@ async function bootstrap(): Promise<void> {
   const io = createSocketServer(server);
   attachRedisAdapter(io);
 
+  // Housekeeping for the shared demo account. Age-based and in-process: see
+  // modules/demo/demo.cleanup.ts for why it is not a reset endpoint.
+  startDemoCleanup();
+
   registerShutdownHandlers(server);
 }
 
@@ -52,6 +57,8 @@ function registerShutdownHandlers(server: Server): void {
     shuttingDown = true;
 
     logger.info({ signal }, '[server] shutting down');
+
+    stopDemoCleanup();
 
     // Close Socket.io first so connected clients get a clean disconnect and
     // reconnect to another instance, rather than having their sockets cut
