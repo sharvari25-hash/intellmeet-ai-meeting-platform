@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { REFRESH_COOKIE_NAME, apiErrorSchema, authResponseSchema } from '@intellmeet/shared';
 import { createApp } from '../../app.js';
+import { env } from '../../config/env.js';
+import { resetRateLimits } from '../../middleware/rateLimit.js';
 import { User } from '../users/user.model.js';
 import {
   VALID_PASSWORD,
@@ -13,6 +15,23 @@ import {
 import { hashRefreshToken } from './auth.tokens.js';
 
 const app = createApp();
+
+/**
+ * Backdates every revocation on a user so the reuse grace window has elapsed.
+ *
+ * Tests run with the real grace window enabled, because that is what
+ * production does. Making a replay look "old" is how a test distinguishes a
+ * genuine theft replay from the concurrent-tab race the window exists for,
+ * without sleeping for ten seconds.
+ */
+async function expireGraceWindow(userId: string): Promise<void> {
+  const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+  await User.updateOne(
+    { _id: userId },
+    { $set: { 'refreshTokens.$[token].revokedAt': longAgo } },
+    { arrayFilters: [{ 'token.revokedAt': { $exists: true } }] },
+  );
+}
 
 describe('POST /api/auth/register', () => {
   it('creates an account, returns the contract shape and sets a refresh cookie', async () => {
@@ -150,16 +169,17 @@ describe('POST /api/auth/refresh', () => {
     expect(rotated).not.toBe(user.refreshCookie);
   });
 
-  it('rejects the previous token once it has been rotated', async () => {
+  it('rejects a rotated token once the grace window has passed', async () => {
     const user = await registerUser(app);
 
     await request(app).post('/api/auth/refresh').set('Cookie', user.refreshCookie).expect(200);
+    await expireGraceWindow(user.id);
 
     // Replaying the original cookie is exactly the reuse signal.
     await request(app).post('/api/auth/refresh').set('Cookie', user.refreshCookie).expect(401);
   });
 
-  it('revokes every session when a rotated token is reused', async () => {
+  it('revokes the affected family when a rotated token is reused', async () => {
     const user = await registerUser(app);
 
     const rotatedResponse = await request(app)
@@ -171,6 +191,8 @@ describe('POST /api/auth/refresh', () => {
       rotatedResponse.headers['set-cookie'] as unknown as string[],
     );
 
+    await expireGraceWindow(user.id);
+
     // An attacker replays the stolen (already-rotated) token.
     const reuse = await request(app)
       .post('/api/auth/refresh')
@@ -179,8 +201,8 @@ describe('POST /api/auth/refresh', () => {
 
     expect(reuse.body.error.message).toContain('revoked');
 
-    // The legitimate client's still-valid token must now be dead too: we
-    // cannot tell which party was the thief, so both are logged out.
+    // The legitimate client's token from the same sign-in must be dead too:
+    // we cannot tell which party was the thief, so that whole family goes.
     await request(app).post('/api/auth/refresh').set('Cookie', currentCookie).expect(401);
 
     const stored = await User.findById(user.id).select('+refreshTokens');
@@ -214,6 +236,129 @@ describe('POST /api/auth/refresh', () => {
 
     expect(hashes).toContain(hashRefreshToken(rawToken));
     expect(hashes).not.toContain(rawToken);
+  });
+});
+
+describe('session isolation on the shared demo account', () => {
+  let demoUserId: string;
+
+  /** Signs in via /demo and returns the refresh cookie for that session. */
+  async function demoSession(): Promise<string> {
+    const response = await request(app).post('/api/auth/demo').expect(200);
+    return extractRefreshCookie(response.headers['set-cookie'] as unknown as string[]);
+  }
+
+  beforeEach(async () => {
+    const demo = await registerUser(app, { name: 'Demo User', email: 'demo@intellmeet.app' });
+    demoUserId = demo.id;
+  });
+
+  it('treats two concurrent refreshes of the same token as a race, not theft', async () => {
+    const session = await demoSession();
+
+    // Two tabs, each its own JavaScript context, refresh with the same cookie
+    // at the same moment. Neither is an attack.
+    const [first, second] = await Promise.all([
+      request(app).post('/api/auth/refresh').set('Cookie', session),
+      request(app).post('/api/auth/refresh').set('Cookie', session),
+    ]);
+
+    expect([first.status, second.status]).toEqual([200, 200]);
+
+    // Both tabs end up with usable, distinct tokens.
+    const firstCookie = extractRefreshCookie(first.headers['set-cookie'] as unknown as string[]);
+    const secondCookie = extractRefreshCookie(second.headers['set-cookie'] as unknown as string[]);
+    expect(firstCookie).not.toBe(secondCookie);
+
+    await request(app).post('/api/auth/refresh').set('Cookie', firstCookie).expect(200);
+    await request(app).post('/api/auth/refresh').set('Cookie', secondCookie).expect(200);
+  });
+
+  it('keeps one reviewer signed in when another reviewer triggers reuse detection', async () => {
+    const reviewerA = await demoSession();
+    const reviewerB = await demoSession();
+
+    // Reviewer A rotates, then replays the old token long after the window.
+    const rotated = await request(app)
+      .post('/api/auth/refresh')
+      .set('Cookie', reviewerA)
+      .expect(200);
+    const reviewerACurrent = extractRefreshCookie(
+      rotated.headers['set-cookie'] as unknown as string[],
+    );
+
+    await expireGraceWindow(demoUserId);
+    await request(app).post('/api/auth/refresh').set('Cookie', reviewerA).expect(401);
+
+    // Reviewer A's own family is gone...
+    await request(app).post('/api/auth/refresh').set('Cookie', reviewerACurrent).expect(401);
+
+    // ...but reviewer B, on a different family, is untouched. This is the
+    // whole point: one reviewer's mishap must not sign everyone else out.
+    await request(app).post('/api/auth/refresh').set('Cookie', reviewerB).expect(200);
+  });
+
+  it('gives every /demo sign-in its own token family', async () => {
+    await demoSession();
+    await demoSession();
+    await demoSession();
+
+    const stored = await User.findById(demoUserId).select('+refreshTokens');
+    const tokens = stored?.refreshTokens ?? [];
+    const families = new Set(tokens.map((token) => token.familyId));
+
+    // Four sign-ins: the registration in beforeEach plus three /demo calls.
+    // Nothing has rotated yet, so one token per family is exactly right.
+    expect(tokens).toHaveLength(4);
+    expect(families.size).toBe(4);
+  });
+});
+
+describe('stored session cap', () => {
+  it('keeps at most MAX_SESSIONS_PER_USER tokens, pruning the oldest', async () => {
+    const user = await registerUser(app);
+    const cap = env.MAX_SESSIONS_PER_USER;
+
+    // Sign in more times than the cap allows. Sequentially, so `createdAt`
+    // strictly increases and "oldest" is unambiguous.
+    for (let i = 0; i < cap + 5; i += 1) {
+      // The login limiter allows 5 attempts per 15 minutes; this test is about
+      // the session cap, so the counter is cleared between sign-ins rather
+      // than weakening the limit that another test asserts.
+      resetRateLimits();
+
+      await request(app)
+        .post('/api/auth/login')
+        .send({ email: user.email, password: user.password })
+        .expect(200);
+    }
+
+    const stored = await User.findById(user.id).select('+refreshTokens');
+    const tokens = stored?.refreshTokens ?? [];
+
+    expect(tokens.length).toBeLessThanOrEqual(cap);
+
+    // What survived must be the newest: the array is kept sorted by createdAt.
+    const timestamps = tokens.map((token) => token.createdAt.getTime());
+    expect([...timestamps].sort((a, b) => a - b)).toEqual(timestamps);
+  });
+
+  it('drops expired tokens before spending the cap on them', async () => {
+    const user = await registerUser(app);
+
+    await User.updateOne(
+      { _id: user.id },
+      { $set: { 'refreshTokens.$[].expiresAt': new Date(Date.now() - 1000) } },
+    );
+
+    await request(app)
+      .post('/api/auth/login')
+      .send({ email: user.email, password: user.password })
+      .expect(200);
+
+    const stored = await User.findById(user.id).select('+refreshTokens');
+    // The expired entry is gone; only the new session remains.
+    expect(stored?.refreshTokens).toHaveLength(1);
   });
 });
 
