@@ -16,12 +16,17 @@
     "seed": "tsx src/scripts/seed.ts",
     "seed:prod": "node dist/scripts/seed.js",
     "demo:cleanup": "tsx src/scripts/demoCleanup.ts",
-    "demo:cleanup:prod": "node dist/scripts/demoCleanup.js"
+    "demo:cleanup:prod": "node dist/scripts/demoCleanup.js",
+    "worker": "tsx src/scripts/worker.ts",
+    "worker:prod": "node dist/scripts/worker.js",
+    "eval:ai": "tsx src/scripts/evalAi.ts"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@intellmeet/shared": "*",
     "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^3.0.3",
+    "bullmq": "^5.81.5",
     "cloudinary": "^2.11.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
