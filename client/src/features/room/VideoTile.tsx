@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MicOff, MonitorUp, VideoOff, WifiOff } from 'lucide-react';
 import type { MediaState } from '@intellmeet/shared';
 import { Avatar, AvatarFallback, AvatarImage, initials } from '@/components/ui/avatar';
@@ -35,21 +35,45 @@ export function VideoTile({
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // Which stream has put a decoded frame on screen. Keyed by the stream rather
+  // than a boolean so a replaced stream starts out "not yet" without a reset
+  // effect.
+  const [framesFrom, setFramesFrom] = useState<MediaStream | null>(null);
+
   useEffect(() => {
     const element = videoRef.current;
     if (!element) return;
 
     element.srcObject = stream;
 
+    // A remote stream exists from the moment the offer is applied - long
+    // before ICE connects and the first keyframe decodes. Showing the element
+    // then gives a blank grey box. `videoWidth` is zero until a real frame has
+    // been decoded, which makes it the honest signal.
+    const onFrame = () => {
+      if (element.videoWidth > 0) setFramesFrom(stream);
+    };
+
+    element.addEventListener('loadeddata', onFrame);
+    element.addEventListener('resize', onFrame);
+    onFrame();
+
     return () => {
+      element.removeEventListener('loadeddata', onFrame);
+      element.removeEventListener('resize', onFrame);
       // Dropping the reference lets the browser release the decoder when the
       // tile unmounts, rather than waiting for garbage collection.
       element.srcObject = null;
     };
   }, [stream]);
 
-  const hasVideo = Boolean(stream) && media.video;
-  const connecting = !isSelf && connectionState !== 'connected' && !hasVideo;
+  const hasFrames = stream !== null && framesFrom === stream;
+  const hasVideo = hasFrames && media.video;
+  // Waiting on the network: their camera is on but nothing has decoded yet, or
+  // the connection is not up. Once a frame has arrived, a later drop keeps the
+  // last picture and shows the reconnecting icon instead; a peer with their
+  // camera off shows their avatar once connected, not an endless spinner.
+  const connecting = !isSelf && !hasFrames && (media.video || connectionState !== 'connected');
   const disconnected = connectionState === 'failed' || connectionState === 'disconnected';
 
   return (
@@ -68,6 +92,8 @@ export function VideoTile({
         // Muting our own tile is not cosmetic: without it the microphone feeds
         // back into the speakers and howls.
         muted={isSelf}
+        // Lets the end-to-end suite tell the remote tiles from our own.
+        data-tile={isSelf ? 'self' : 'remote'}
         className={cn('size-full object-cover', !hasVideo && 'invisible')}
       />
 
@@ -81,8 +107,11 @@ export function VideoTile({
       )}
 
       {connecting && (
-        <div className="absolute inset-0 grid place-items-center bg-background/60">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background/60">
           <Spinner label={`Connecting to ${name}`} />
+          <span aria-hidden="true" className="text-xs font-medium text-foreground">
+            Connecting…
+          </span>
         </div>
       )}
 
