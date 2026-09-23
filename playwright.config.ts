@@ -16,6 +16,9 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/globalSetup.ts',
+  // Removes the meetings the specs created, so runs do not litter the shared
+  // demo workspace.
+  globalTeardown: './e2e/globalTeardown.ts',
   // One meeting at a time: the specs sign in as the shared demo account and
   // would otherwise race each other inside the same workspace.
   workers: 1,
