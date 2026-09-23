@@ -1,18 +1,16 @@
 import { useState, type FormEvent } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import { CalendarClock, Radio, Users, Video } from 'lucide-react';
-import { toast } from 'sonner';
-import { Spinner } from '@/components/Spinner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ApiError } from '@/lib/apiClient';
-import { listMeetings, meetingKeys, startInstantMeeting } from '@/features/meetings/meetings.api';
+import { CreateMeetingDialog } from '@/features/meetings/CreateMeetingDialog';
+import { listMeetings, meetingKeys } from '@/features/meetings/meetings.api';
 import { listTeams, teamKeys } from '@/features/teams/teams.api';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -83,25 +81,9 @@ function MeetingRows() {
 export function DashboardPage() {
   const user = useAuthStore((state) => state.user);
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [joinCode, setJoinCode] = useState('');
 
   const teams = useQuery({ queryKey: teamKeys.all, queryFn: listTeams });
-  const firstTeam = teams.data?.[0];
-
-  const instant = useMutation({
-    mutationFn: () => {
-      if (!firstTeam) throw new Error('Create a team first');
-      return startInstantMeeting(firstTeam.id, `${user?.name ?? 'Team'} meeting`);
-    },
-    onSuccess: (meeting) => {
-      void queryClient.invalidateQueries({ queryKey: meetingKeys.all });
-      navigate(`/app/room/${meeting.roomCode}`);
-    },
-    onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : 'Could not start the meeting');
-    },
-  });
 
   function onJoin(event: FormEvent) {
     event.preventDefault();
@@ -148,19 +130,13 @@ export function DashboardPage() {
                 Start a meeting
               </CardTitle>
               <CardDescription>
-                Goes live immediately in {firstTeam ? firstTeam.name : 'your team'} and notifies
-                everyone in it.
+                Start now or schedule for later. Everyone in the team you pick is notified.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button
-                className="w-full sm:w-auto"
-                disabled={instant.isPending || teams.isPending || !firstTeam}
-                onClick={() => instant.mutate()}
-              >
-                {instant.isPending && <Spinner label="Creating the meeting" />}
-                Start now
-              </Button>
+              {/* The team picker lives in the dialog, so a workspace with
+                  several teams no longer silently uses the first one. */}
+              <CreateMeetingDialog />
             </CardContent>
           </Card>
 
