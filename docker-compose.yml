@@ -4,6 +4,10 @@
 #   docker compose up -d      # start Mongo + Redis
 #   docker compose down       # stop
 #   docker compose down -v    # stop and wipe local data
+# Fixes the Compose project name so containers/volumes are namespaced
+# `intellmeet` instead of being derived from the folder name.
+name: intellmeet
+
 services:
   mongo:
     image: mongo:7
