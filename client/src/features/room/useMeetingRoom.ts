@@ -68,6 +68,13 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
   const localStreamRef = useRef(localStream);
   localStreamRef.current = localStream;
 
+  // Read through a ref, not listed as an effect dependency. The caller builds
+  // this callback from its media object, which is new on every render of the
+  // page above - and a dependency here would leave and rejoin the room, tearing
+  // down every peer connection, each time somebody toggled their microphone.
+  const onForceMuteRef = useRef(onForceMute);
+  onForceMuteRef.current = onForceMute;
+
   // ICE servers come from the API rather than the bundle: a TURN credential in
   // public JavaScript is a relay somebody else pays for.
   const ice = useQuery({ queryKey: iceKeys.servers, queryFn: fetchIceServers, staleTime: 300_000 });
@@ -123,12 +130,15 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
       transportRef.current = transport;
       if (localStreamRef.current) transport.start(localStreamRef.current);
 
+      // We are the newcomer, so we open the negotiation with everyone already
+      // here. They answer; see `awaitingOffer` in MeshTransport for why only
+      // one side offers.
       for (const participant of data.participants) {
         if (participant.socketId === data.selfSocketId) {
           setSelf(participant);
           continue;
         }
-        transport.addPeer(participant);
+        transport.addPeer(participant, { initiator: true });
       }
 
       setPhase('live');
@@ -137,7 +147,8 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
     const onUserJoined = (raw: unknown) => {
       const data = raw as { meetingId: string; participant: Participant };
       if (data.meetingId !== meetingId) return;
-      transportRef.current?.addPeer(data.participant);
+      // They arrived after us, so they send the offer and we answer it.
+      transportRef.current?.addPeer(data.participant, { initiator: false });
     };
 
     const onUserLeft = (raw: unknown) => {
@@ -184,7 +195,7 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
       if (data.byUserId === me?.id) return;
       if (data.targetUserId && data.targetUserId !== me?.id) return;
 
-      onForceMute();
+      onForceMuteRef.current();
       toast.info('The host muted your microphone.');
     };
 
@@ -241,7 +252,7 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
       transportRef.current?.close();
       transportRef.current = null;
     };
-  }, [socket, meetingId, ice.data, me?.id, onForceMute]);
+  }, [socket, meetingId, ice.data, me?.id]);
 
   // Publishing the local stream is separate from joining, because the lobby
   // may still be acquiring the camera when the roster arrives.
