@@ -1,0 +1,9 @@
+{
+  "//": "Production build only. tsconfig.json additionally type-checks tests and the Vitest config; those must not end up in dist/.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/test/**"]
+}

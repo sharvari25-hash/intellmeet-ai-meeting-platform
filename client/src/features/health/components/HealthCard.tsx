@@ -1,15 +1,38 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
-import type { HealthResponse } from '@intellmeet/shared';
+import { Activity, AlertTriangle, CheckCircle2, Loader2, RefreshCw, XCircle } from 'lucide-react';
+import type { DependencyHealth, HealthResponse } from '@intellmeet/shared';
 import { Button } from '@/components/ui/button';
 import { fetchHealth } from '@/lib/health';
 
 type State =
   { kind: 'loading' } | { kind: 'ok'; data: HealthResponse } | { kind: 'error'; message: string };
 
+/** One dependency row: MongoDB or Redis, with its probe latency or failure reason. */
+function DependencyRow({ name, health }: { name: string; health: DependencyHealth }) {
+  const isUp = health.status === 'up';
+
+  return (
+    <div className="flex items-start justify-between gap-4 border-t py-2 first:border-t-0">
+      <span className="text-muted-foreground">{name}</span>
+      <span className="flex items-center gap-1.5 text-right font-medium">
+        {isUp ? (
+          <CheckCircle2 aria-hidden="true" className="size-4 text-[var(--success)]" />
+        ) : (
+          <XCircle aria-hidden="true" className="size-4 text-destructive" />
+        )}
+        <span className={isUp ? 'text-[var(--success)]' : 'text-destructive'}>{health.status}</span>
+        {health.latencyMs !== undefined && (
+          <span className="text-xs text-muted-foreground">({health.latencyMs}ms)</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
 /**
- * Phase 0 proof-of-wiring: the client fetches the server's health endpoint
- * through the same-origin /api path and renders the parsed result.
+ * Phase 0/1 proof-of-wiring: the client fetches the server's health endpoint
+ * through the same-origin /api path and renders the parsed result, including
+ * the per-dependency status the server reports for MongoDB and Redis.
  * Replaced by the real dashboard in Phase 4; the data-fetching moves to
  * TanStack Query at the same time.
  */
@@ -35,6 +58,8 @@ export function HealthCard() {
     return () => controller.abort();
   }, [load]);
 
+  const isDegraded = state.kind === 'ok' && state.data.status === 'degraded';
+
   return (
     <section
       aria-labelledby="health-heading"
@@ -47,7 +72,7 @@ export function HealthCard() {
         </h2>
       </header>
 
-      <div aria-live="polite" className="min-h-24">
+      <div aria-live="polite" className="min-h-40">
         {state.kind === 'loading' && (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 aria-hidden="true" className="size-4 animate-spin" />
@@ -69,25 +94,43 @@ export function HealthCard() {
         )}
 
         {state.kind === 'ok' && (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">Status</dt>
-            <dd className="flex items-center gap-1.5 font-medium text-[var(--success)]">
-              <CheckCircle2 aria-hidden="true" className="size-4" />
-              {state.data.status}
-            </dd>
+          <div className="space-y-4 text-sm">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+              <dt className="text-muted-foreground">Status</dt>
+              <dd
+                className={`flex items-center gap-1.5 font-medium ${
+                  isDegraded ? 'text-destructive' : 'text-[var(--success)]'
+                }`}
+              >
+                {isDegraded ? (
+                  <AlertTriangle aria-hidden="true" className="size-4" />
+                ) : (
+                  <CheckCircle2 aria-hidden="true" className="size-4" />
+                )}
+                {state.data.status}
+              </dd>
 
-            <dt className="text-muted-foreground">Service</dt>
-            <dd className="font-medium">{state.data.service}</dd>
+              <dt className="text-muted-foreground">Service</dt>
+              <dd className="font-medium">{state.data.service}</dd>
 
-            <dt className="text-muted-foreground">Version</dt>
-            <dd className="font-medium">{state.data.version}</dd>
+              <dt className="text-muted-foreground">Version</dt>
+              <dd className="font-medium">{state.data.version}</dd>
 
-            <dt className="text-muted-foreground">Environment</dt>
-            <dd className="font-medium">{state.data.environment}</dd>
+              <dt className="text-muted-foreground">Environment</dt>
+              <dd className="font-medium">{state.data.environment}</dd>
 
-            <dt className="text-muted-foreground">Uptime</dt>
-            <dd className="font-medium">{state.data.uptimeSec}s</dd>
-          </dl>
+              <dt className="text-muted-foreground">Uptime</dt>
+              <dd className="font-medium">{state.data.uptimeSec}s</dd>
+            </dl>
+
+            <div>
+              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Dependencies
+              </h3>
+              <DependencyRow name="MongoDB" health={state.data.dependencies.mongo} />
+              <DependencyRow name="Redis" health={state.data.dependencies.redis} />
+            </div>
+          </div>
         )}
       </div>
 
