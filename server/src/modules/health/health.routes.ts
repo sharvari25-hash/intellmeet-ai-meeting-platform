@@ -1,28 +1,33 @@
 import { Router } from 'express';
-import { healthResponseSchema, type HealthResponse } from '@intellmeet/shared';
-import { env } from '../../config/env.js';
+import { healthResponseSchema } from '@intellmeet/shared';
+import { getHealth } from './health.service.js';
 
 export const healthRouter: Router = Router();
 
 /**
- * GET /api/health
+ * GET /api/health - liveness.
  *
- * Deliberately dependency-free and unauthenticated so it can serve three
- * jobs at once: the Render health check, the Kubernetes readiness/liveness
- * probes, and the free-tier keep-alive ping. Phase 1 extends the payload
- * with MongoDB and Redis sub-checks.
+ * Always returns 200 while the process can answer, with per-dependency detail
+ * in the body. It deliberately does NOT fail when Mongo or Redis is down:
+ * Render restarts a service whose health check fails, and restarting the API
+ * does nothing to fix a database outage - it just turns a partial outage into
+ * a total one. Unauthenticated so it can also serve the free-tier keep-alive
+ * ping and Kubernetes' liveness probe.
  */
-healthRouter.get('/', (_req, res) => {
-  const body: HealthResponse = {
-    status: 'ok',
-    service: 'intellmeet-server',
-    version: process.env.npm_package_version ?? '0.1.0',
-    environment: env.NODE_ENV,
-    uptimeSec: Math.round(process.uptime()),
-    timestamp: new Date().toISOString(),
-  };
-
+healthRouter.get('/', async (_req, res) => {
   // Parsing our own response guarantees the handler can never drift from the
   // schema the client uses to decode it.
-  res.status(200).json(healthResponseSchema.parse(body));
+  res.status(200).json(healthResponseSchema.parse(await getHealth()));
+});
+
+/**
+ * GET /api/health/ready - readiness.
+ *
+ * Returns 503 when any dependency is down, which is what a Kubernetes
+ * readiness probe (Phase 11) and a load balancer need: take this instance out
+ * of rotation, but leave it running.
+ */
+healthRouter.get('/ready', async (_req, res) => {
+  const health = await getHealth();
+  res.status(health.status === 'ok' ? 200 : 503).json(healthResponseSchema.parse(health));
 });
