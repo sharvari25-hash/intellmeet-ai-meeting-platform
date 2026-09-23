@@ -4,6 +4,7 @@ import {
   chatTypingSchema,
   hostMuteSchema,
   mediaTogglePayloadSchema,
+  recordingStateSchema,
   roomEndSchema,
   roomJoinSchema,
   roomLeaveSchema,
@@ -25,7 +26,9 @@ import {
   addParticipant,
   clearRoom,
   getParticipants,
+  getRoomRecording,
   removeParticipant,
+  setRoomRecording,
   updateParticipantMedia,
   type StoredParticipant,
 } from './presence.js';
@@ -139,6 +142,18 @@ async function leaveRoom(io: AppServer, socket: AppSocket, meetingId: string): P
     socketId: socket.id,
     userId: user.id,
   });
+
+  // The recorder's tab closing ends the recording, so the indicator must not
+  // outlive it and tell everyone they are still being recorded.
+  const recording = await getRoomRecording(meetingId);
+  if (recording?.socketId === socket.id) {
+    await setRoomRecording(meetingId, null);
+    io.to(socketRooms.meeting(meetingId)).emit(SOCKET_EVENTS.RECORDING_STATE, {
+      meetingId,
+      recording: false,
+      byUserId: user.id,
+    });
+  }
 }
 
 export function registerHandlers(io: AppServer, socket: AppSocket): void {
@@ -172,11 +187,15 @@ export function registerHandlers(io: AppServer, socket: AppSocket): void {
 
     // Tell the newcomer who is already here, so it can open a peer connection
     // to each of them. `selfSocketId` lets it exclude itself from the mesh.
-    const participants = await getParticipants(meetingId);
+    const [participants, recording] = await Promise.all([
+      getParticipants(meetingId),
+      getRoomRecording(meetingId),
+    ]);
     socket.emit(SOCKET_EVENTS.ROOM_PARTICIPANTS, {
       meetingId,
       selfSocketId: socket.id,
       participants: participants.map(toParticipant),
+      recording: recording !== null,
     });
 
     // ...and tell everyone else that someone arrived. Broadcast excludes the
@@ -229,6 +248,39 @@ export function registerHandlers(io: AppServer, socket: AppSocket): void {
       state,
     });
   });
+
+  // --- Recording indicator -------------------------------------------------
+
+  on(
+    socket,
+    SOCKET_EVENTS.RECORDING_STATE,
+    recordingStateSchema,
+    async ({ meetingId, recording }) => {
+      if (!socketRoomsJoined.get(socket)?.has(meetingId)) {
+        throw AppError.forbidden('You are not in that meeting');
+      }
+
+      // Only the host records (the plan's rule, and the one person whose
+      // browser holds everyone's audio with their knowledge).
+      const meeting = await getMeetingForMember(meetingId, user.id);
+      if (meeting.hostId.toString() !== user.id) {
+        throw AppError.forbidden('Only the host can record the meeting');
+      }
+
+      await setRoomRecording(
+        meetingId,
+        recording ? { socketId: socket.id, userId: user.id } : null,
+      );
+
+      // Everyone, the host included: each browser renders the indicator from the
+      // same broadcast, so nobody can be shown a state the others are not.
+      io.to(socketRooms.meeting(meetingId)).emit(SOCKET_EVENTS.RECORDING_STATE, {
+        meetingId,
+        recording,
+        byUserId: user.id,
+      });
+    },
+  );
 
   // --- Chat ----------------------------------------------------------------
 

@@ -20,6 +20,8 @@ const keys = {
   userSockets: (userId: string) => `presence:user:${userId}:sockets`,
   /** Hash of socketId -> participant JSON for one meeting room. */
   roomParticipants: (meetingId: string) => `room:${meetingId}:participants`,
+  /** Who is recording the meeting right now, if anyone. */
+  roomRecording: (meetingId: string) => `room:${meetingId}:recording`,
 } as const;
 
 /**
@@ -168,8 +170,48 @@ export async function updateParticipantMedia(
 /** Removes every trace of a room. Called when the host ends the meeting. */
 export async function clearRoom(meetingId: string): Promise<void> {
   try {
-    await getRedis().del(keys.roomParticipants(meetingId));
+    await getRedis().del(keys.roomParticipants(meetingId), keys.roomRecording(meetingId));
   } catch (error) {
     logger.warn({ err: error, meetingId }, '[presence] failed to clear room');
+  }
+}
+
+// --- Recording indicator -----------------------------------------------------
+
+export interface RoomRecording {
+  socketId: string;
+  userId: string;
+}
+
+/**
+ * Marks the room as being recorded by one socket, or clears it with null.
+ *
+ * Kept in Redis alongside the roster so a participant who joins mid-recording
+ * - on any instance - is told straight away. Remembering *which* socket is
+ * recording lets the flag be cleared when that tab closes without saying so.
+ */
+export async function setRoomRecording(
+  meetingId: string,
+  recording: RoomRecording | null,
+): Promise<void> {
+  try {
+    const redis = getRedis();
+    if (recording) {
+      await redis.set(keys.roomRecording(meetingId), JSON.stringify(recording), 'EX', ROOM_TTL_SEC);
+    } else {
+      await redis.del(keys.roomRecording(meetingId));
+    }
+  } catch (error) {
+    logger.warn({ err: error, meetingId }, '[presence] failed to update recording state');
+  }
+}
+
+export async function getRoomRecording(meetingId: string): Promise<RoomRecording | null> {
+  try {
+    const raw = await getRedis().get(keys.roomRecording(meetingId));
+    return raw ? (JSON.parse(raw) as RoomRecording) : null;
+  } catch (error) {
+    logger.warn({ err: error, meetingId }, '[presence] failed to read recording state');
+    return null;
   }
 }
