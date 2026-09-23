@@ -1,0 +1,42 @@
+# Local development dependencies only (MongoDB + Redis).
+# The app itself runs on the host via `npm run dev`.
+#
+#   docker compose up -d      # start Mongo + Redis
+#   docker compose down       # stop
+#   docker compose down -v    # stop and wipe local data
+services:
+  mongo:
+    image: mongo:7
+    container_name: intellmeet-mongo
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    environment:
+      MONGO_INITDB_DATABASE: intellmeet
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: intellmeet-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo-data:
+  redis-data:
