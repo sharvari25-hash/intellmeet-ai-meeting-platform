@@ -1,8 +1,9 @@
+import type { UserRole } from '@intellmeet/shared';
+
 export {};
 
 /**
- * Types the per-request correlation id set by the `requestId` middleware, so
- * `req.id` is a `string` everywhere instead of needing a cast at each use.
+ * Augments Express's request with the two things our middleware attaches.
  *
  * The augmentation targets `express-serve-static-core`'s `Request` interface
  * rather than the `Express.Request` global. `Request` extends both
@@ -14,6 +15,13 @@ export {};
  */
 declare module 'express-serve-static-core' {
   interface Request {
+    /** Correlation id set by the `requestId` middleware. */
     id: string;
+    /**
+     * Set by `requireAuth`. Optional because it is genuinely absent on public
+     * routes - controllers read it through `currentUser(req)`, which turns a
+     * missing `requireAuth` into a loud error rather than a silent `undefined`.
+     */
+    user?: { id: string; role: UserRole };
   }
 }
