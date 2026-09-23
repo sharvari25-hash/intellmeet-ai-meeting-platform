@@ -1,66 +1,81 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { screen, waitFor } from '@testing-library/react';
+import { authPayload, apiErrorBody, renderWithProviders } from '@/test/utils';
+import { useAuthStore } from '@/stores/authStore';
 import App from './App';
 
-const healthPayload = {
-  status: 'ok',
-  service: 'intellmeet-server',
-  version: '0.1.0',
-  environment: 'test',
-  uptimeSec: 1,
-  timestamp: new Date().toISOString(),
-  dependencies: {
-    mongo: { status: 'up', latencyMs: 3 },
-    redis: { status: 'up', latencyMs: 1 },
-  },
-};
+// The socket is exercised by the server's own integration suite over a real
+// WebSocket. In jsdom it would only attempt a doomed connection to the test
+// origin and log the failure, so it is stubbed out here.
+vi.mock('@/lib/socket', () => ({ connectSocket: vi.fn() }));
 
-describe('<App />', () => {
-  beforeEach(() => {
-    // Stub the network so the test asserts rendering, not connectivity.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => Response.json(healthPayload)),
-    );
+/**
+ * Every render of <App /> runs the session bootstrap, which POSTs to
+ * /api/auth/refresh. A stub that refuses is the signed-out case; one that
+ * returns a payload is the "reload while signed in" case.
+ */
+function stubRefresh(result: 'anonymous' | 'authenticated') {
+  const mock = vi.fn(async (url: string) => {
+    if (url === '/api/auth/refresh') {
+      return result === 'authenticated'
+        ? Response.json(authPayload())
+        : new Response(JSON.stringify(apiErrorBody('UNAUTHORIZED', 'No active session')), {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+          });
+    }
+    // Anything the dashboard asks for afterwards.
+    return Response.json({ teams: [], meetings: [], total: 0, page: 1, limit: 20 });
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
+  vi.stubGlobal('fetch', mock);
+  return mock;
+}
+
+describe('routing', () => {
+  it('shows the landing page at the root', async () => {
+    stubRefresh('anonymous');
+    renderWithProviders(<App />, { route: '/' });
+
+    expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent(/IntellMeet/);
+    expect(screen.getAllByRole('button', { name: /try live demo/i }).length).toBeGreaterThan(0);
   });
 
-  it('renders the product name and the API health panel', async () => {
-    render(<App />);
+  it('sends an anonymous visitor from a protected route to sign in', async () => {
+    stubRefresh('anonymous');
+    renderWithProviders(<App />, { route: '/app' });
 
-    expect(screen.getByRole('heading', { level: 1, name: 'IntellMeet' })).toBeInTheDocument();
-    expect(await screen.findByText('intellmeet-server')).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Welcome back' }),
+    ).toBeInTheDocument();
   });
 
-  it('renders a row per backing dependency', async () => {
-    render(<App />);
+  it('restores the session on a reload and keeps the user on their page', async () => {
+    stubRefresh('authenticated');
+    renderWithProviders(<App />, { route: '/app/settings' });
 
-    expect(await screen.findByText('MongoDB')).toBeInTheDocument();
-    expect(screen.getByText('Redis')).toBeInTheDocument();
-    expect(screen.getByText('(3ms)')).toBeInTheDocument();
+    // Proves the whole chain: refresh cookie -> access token in memory ->
+    // guard lets the route through -> the page renders.
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
+    await waitFor(() => expect(useAuthStore.getState().status).toBe('authenticated'));
   });
 
-  it('surfaces a degraded backend instead of claiming everything is fine', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        Response.json({
-          ...healthPayload,
-          status: 'degraded',
-          dependencies: {
-            ...healthPayload.dependencies,
-            redis: { status: 'down', error: 'client not connected' },
-          },
-        }),
-      ),
-    );
+  it('renders a 404 page for an unknown path', async () => {
+    stubRefresh('anonymous');
+    renderWithProviders(<App />, { route: '/does-not-exist' });
 
-    render(<App />);
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Page not found' }),
+    ).toBeInTheDocument();
+  });
 
-    expect(await screen.findByText('degraded')).toBeInTheDocument();
-    expect(screen.getByText('down')).toBeInTheDocument();
+  it('shows the invite screen for a join link without an account', async () => {
+    stubRefresh('anonymous');
+    renderWithProviders(<App />, { route: '/join/ABC234' });
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /invited to a team/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toBeInTheDocument();
   });
 });
