@@ -21,7 +21,6 @@ import {
   recordParticipantJoin,
   recordParticipantLeave,
 } from '../modules/meetings/meeting.service.js';
-import { safeCreateNotifications } from '../modules/notifications/notification.service.js';
 import {
   addParticipant,
   clearRoom,
@@ -313,29 +312,4 @@ export function registerHandlers(io: AppServer, socket: AppSocket): void {
       }
     })();
   });
-}
-
-/**
- * Notifies every participant of a meeting that it has started.
- *
- * Exported for the REST layer, which owns the "host pressed Start" path.
- */
-export async function notifyMeetingStarted(
-  io: AppServer,
-  meeting: { id: string; title: string; teamId: string },
-  recipientIds: string[],
-): Promise<void> {
-  const created = await safeCreateNotifications(
-    recipientIds.map((userId) => ({
-      userId,
-      type: 'meeting_started' as const,
-      title: 'Meeting started',
-      body: `"${meeting.title}" has started`,
-      payload: { meetingId: meeting.id, teamId: meeting.teamId },
-    })),
-  );
-
-  for (const { userId, notification } of created) {
-    io.to(socketRooms.user(userId)).emit(SOCKET_EVENTS.NOTIFY_NEW, notification);
-  }
 }
