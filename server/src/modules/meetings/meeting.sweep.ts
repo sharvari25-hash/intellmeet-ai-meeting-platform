@@ -2,6 +2,7 @@ import { SOCKET_EVENTS, socketRooms } from '@intellmeet/shared';
 import { env } from '../../config/env.js';
 import { logger } from '../../lib/logger.js';
 import { getIo } from '../../sockets/index.js';
+import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { clearRoom } from '../../sockets/presence.js';
 import { connectedSocketIds, pruneDisconnected } from '../../sockets/rooms.js';
 import type { AppServer } from '../../sockets/socket.types.js';
@@ -62,7 +63,7 @@ export async function endAbandonedMeetings(
   const cutoff = new Date(now.getTime() - idleMinutes * 60 * 1000);
 
   const live = await Meeting.find({ status: 'live' }).select(
-    '_id roomCode title startedAt createdAt lastActiveAt',
+    '_id teamId roomCode title startedAt createdAt lastActiveAt',
   );
 
   for (const meeting of live) {
@@ -118,6 +119,7 @@ async function endAbandoned(
 
   const meetingId = meeting._id.toString();
   await invalidateMeeting(meeting);
+  await invalidateTeamAnalytics([meeting.teamId]);
   await clearRoom(meetingId);
 
   // Nobody is connected, but a socket on an instance that did not answer, or

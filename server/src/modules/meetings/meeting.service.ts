@@ -13,6 +13,7 @@ import { DEFAULT_TTL_SEC, cacheDel, cacheKeys, cached } from '../../lib/cache.js
 import { AppError } from '../../lib/errors.js';
 import { generateCode } from '../../lib/ids.js';
 import { MeetingInsight } from '../ai/insight.model.js';
+import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { Message } from '../chat/message.model.js';
 import { Notification } from '../notifications/notification.model.js';
 import { Transcript } from '../ai/transcript.model.js';
@@ -424,6 +425,8 @@ export async function endMeeting(meetingId: string, userId: string): Promise<Mee
 
     await meeting.save();
     await invalidateMeeting(meeting);
+    // An ended meeting is when it starts counting in the team's analytics.
+    await invalidateTeamAnalytics([meeting.teamId]);
   }
 
   return toMeetingDto(meeting, userId);
@@ -439,6 +442,7 @@ export async function deleteMeeting(meetingId: string, userId: string): Promise<
   await deleteMeetingArtifacts([meeting]);
   await meeting.deleteOne();
   await invalidateMeeting(meeting);
+  await invalidateTeamAnalytics([meeting.teamId]);
 }
 
 /**

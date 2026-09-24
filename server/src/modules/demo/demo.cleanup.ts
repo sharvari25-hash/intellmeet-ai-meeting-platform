@@ -2,6 +2,7 @@ import type { Types } from 'mongoose';
 import { env } from '../../config/env.js';
 import { cacheDel, cacheKeys } from '../../lib/cache.js';
 import { logger } from '../../lib/logger.js';
+import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { Message } from '../chat/message.model.js';
 import { Meeting } from '../meetings/meeting.model.js';
 import { deleteMeetingArtifacts } from '../meetings/meeting.service.js';
@@ -157,7 +158,10 @@ export async function removeGuests(guestIds: Types.ObjectId[]): Promise<DemoClea
   await TaskComment.deleteMany({ authorId: { $in: guestIds } });
 
   // Out of every team they joined, above all the seeded one, whose member
-  // list would otherwise grow by one dead entry per demo sign-in.
+  // list would otherwise grow by one dead entry per demo sign-in. Those
+  // teams' analytics lose the meetings and tasks that went with them.
+  const joinedTeams = await Team.find({ 'members.userId': { $in: guestIds } }).distinct('_id');
+  await invalidateTeamAnalytics(joinedTeams);
   await Team.updateMany(
     { 'members.userId': { $in: guestIds } },
     { $pull: { members: { userId: { $in: guestIds } } } },
@@ -276,6 +280,8 @@ export async function cleanupDemoData(
   }
 
   if (Object.values(result).some((count) => count > 0)) {
+    // Whatever went, the shared demo team is where anyone would be looking.
+    await invalidateTeamAnalytics(await Team.find({ slug: DEMO_TEAM_SLUG }).distinct('_id'));
     logger.info({ ...result, cutoff, hours }, '[demo] cleaned up stale demo data');
   }
 
