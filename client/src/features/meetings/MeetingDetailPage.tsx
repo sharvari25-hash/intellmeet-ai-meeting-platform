@@ -1,6 +1,6 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   AlertTriangle,
@@ -9,53 +9,64 @@ import {
   CheckCircle2,
   Circle,
   Clock,
-  ListChecks,
   Loader2,
   Mic,
   RotateCw,
-  Scale,
-  ScrollText,
-  Sparkles,
   Users,
+  Video,
 } from 'lucide-react';
 import type { AiStatusEvent, Meeting, MeetingIntelligence } from '@intellmeet/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ApiError } from '@/lib/apiClient';
 import { cn } from '@/lib/utils';
 import { AiStatusBadge } from './AiStatusBadge';
 import { aiKeys, getMeetingIntelligence, retryAiProcessing } from './ai.api';
-import { AI_STEPS, formatOffset, isAiInProgress } from './aiStatus';
+import { AI_STEPS, isAiInProgress } from './aiStatus';
+import { ActionItemsTab } from './detail/ActionItemsTab';
+import { ChatLogTab } from './detail/ChatLogTab';
+import { ExportMenu } from './detail/ExportMenu';
+import { RecordingTab } from './detail/RecordingTab';
+import { SummaryTab } from './detail/SummaryTab';
+import { TranscriptTab } from './detail/TranscriptTab';
+import { useRecordingSource } from './detail/useRecordingSource';
+import { buildExportModel, hasExportableContent } from './export/meetingExport';
+import { formatDateTime, formatMinutes, meetingWhen } from './format';
 import { getMeeting, meetingKeys } from './meetings.api';
 import { useAiStatusUpdates } from './useAiStatusUpdates';
 
-function formatDate(iso: string | null): string {
-  if (!iso) return 'Not started';
-  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
+const TABS = ['summary', 'actions', 'transcript', 'chat', 'recording'] as const;
+type Tab = (typeof TABS)[number];
 
-/** "Fri 18 Sep" - a due date, not a timestamp, so no time and no time zone shift. */
-function formatDue(isoDate: string): string {
-  return new Date(`${isoDate}T12:00:00`).toLocaleDateString(undefined, {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-  });
+function isTab(value: string | null): value is Tab {
+  return (TABS as readonly string[]).includes(value ?? '');
 }
 
 /**
- * One meeting's AI output: summary, decisions, action items and transcript.
+ * One meeting, after the fact: summary, action items, transcript, chat and
+ * recording, each on its own tab.
  *
- * Phase 6 needs somewhere to show what the pipeline produced; Phase 7 turns
- * this into the full history view with tabs, search, editing and export.
- * Progress arrives live over the socket, so the page walks from "Transcribing"
- * to the finished summary on its own.
+ * Tabs rather than one long page, because the transcript can be an hour long
+ * and everything below it would be out of reach on a phone. The open tab
+ * lives in the URL (`?tab=transcript&t=252&q=pricing`), so a search result
+ * can link straight to a line of the transcript, and Back works.
+ *
+ * AI progress still arrives live over the socket, so the page walks from
+ * "Transcribing" to the finished summary on its own.
  */
 export function MeetingDetailPage() {
   const { meetingId = '' } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
+
+  const requestedTab = searchParams.get('tab');
+  const tab: Tab = isTab(requestedTab) ? requestedTab : 'summary';
+  const seconds = Number(searchParams.get('t'));
+  const initialTime = searchParams.has('t') && Number.isFinite(seconds) ? seconds : null;
+  const initialQuery = searchParams.get('q') ?? '';
 
   const meeting = useQuery({
     queryKey: meetingKeys.detail(meetingId),
@@ -108,46 +119,84 @@ export function MeetingDetailPage() {
           {notFound ? 'Meeting not found' : 'Could not load the meeting'}
         </h1>
         <Button asChild variant="outline" className="mt-6">
-          <Link to="/app">Back to the dashboard</Link>
+          <Link to="/app/meetings">Back to all meetings</Link>
         </Button>
       </div>
     );
   }
 
-  const data = meeting.data;
+  function selectTab(next: string) {
+    setSearchParams(
+      (previous) => {
+        const params = new URLSearchParams(previous);
+        params.set('tab', next);
+        // A deep link's timestamp belongs to the visit that followed it.
+        params.delete('t');
+        return params;
+      },
+      { replace: true },
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-6">
       <Button asChild variant="ghost" size="sm" className="-ml-2">
-        <Link to="/app">
+        <Link to="/app/meetings">
           <ArrowLeft aria-hidden="true" />
-          Dashboard
+          All meetings
         </Link>
       </Button>
 
-      <MeetingHeader meeting={data} aiStatus={intelligence.data?.aiStatus ?? data.aiStatus} />
+      <MeetingHeader
+        meeting={meeting.data}
+        intelligence={intelligence.data}
+        aiStatus={intelligence.data?.aiStatus ?? meeting.data.aiStatus}
+      />
 
       {intelligence.isPending && <Skeleton className="h-48 w-full" />}
       {intelligence.isError && (
-        <p className="text-sm text-destructive">Could not load the summary for this meeting.</p>
+        <p role="alert" className="text-sm text-destructive">
+          Could not load the summary for this meeting.
+        </p>
       )}
       {intelligence.data && (
-        <AiSections
-          meeting={data}
-          intelligence={intelligence.data}
-          onRetry={() => retry.mutate()}
-          retrying={retry.isPending}
-        />
+        <>
+          <PipelineStatus
+            meeting={meeting.data}
+            intelligence={intelligence.data}
+            onRetry={() => retry.mutate()}
+            retrying={retry.isPending}
+          />
+          <MeetingTabs
+            meeting={meeting.data}
+            intelligence={intelligence.data}
+            tab={tab}
+            onTabChange={selectTab}
+            initialQuery={initialQuery}
+            initialTime={initialTime}
+          />
+        </>
       )}
     </div>
   );
 }
 
-function MeetingHeader({ meeting, aiStatus }: { meeting: Meeting; aiStatus: Meeting['aiStatus'] }) {
+function MeetingHeader({
+  meeting,
+  intelligence,
+  aiStatus,
+}: {
+  meeting: Meeting;
+  intelligence: MeetingIntelligence | undefined;
+  aiStatus: Meeting['aiStatus'];
+}) {
+  const model = useMemo(() => buildExportModel(meeting, intelligence), [meeting, intelligence]);
+
   return (
-    <header className="space-y-2">
+    <header className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="min-w-0 text-2xl font-semibold tracking-tight">{meeting.title}</h1>
+        {meeting.status === 'live' && <Badge variant="success">Live</Badge>}
         <AiStatusBadge status={aiStatus} />
       </div>
       {meeting.description && (
@@ -159,7 +208,7 @@ function MeetingHeader({ meeting, aiStatus }: { meeting: Meeting; aiStatus: Meet
             <CalendarDays aria-hidden="true" className="size-4" />
             <span className="sr-only">Date</span>
           </dt>
-          <dd>{formatDate(meeting.startedAt ?? meeting.scheduledAt)}</dd>
+          <dd>{formatDateTime(meetingWhen(meeting))}</dd>
         </div>
         {meeting.durationSec !== null && (
           <div className="flex items-center gap-1.5">
@@ -167,7 +216,7 @@ function MeetingHeader({ meeting, aiStatus }: { meeting: Meeting; aiStatus: Meet
               <Clock aria-hidden="true" className="size-4" />
               <span className="sr-only">Duration</span>
             </dt>
-            <dd>{Math.max(1, Math.round(meeting.durationSec / 60))} min</dd>
+            <dd>{formatMinutes(meeting.durationSec)}</dd>
           </div>
         )}
         <div className="flex items-center gap-1.5">
@@ -182,11 +231,24 @@ function MeetingHeader({ meeting, aiStatus }: { meeting: Meeting; aiStatus: Meet
           </dd>
         </div>
       </dl>
+
+      <div className="flex flex-wrap gap-2">
+        {meeting.status === 'live' && (
+          <Button asChild size="sm">
+            <Link to={`/app/room/${meeting.roomCode}`}>
+              <Video aria-hidden="true" />
+              Open the meeting room
+            </Link>
+          </Button>
+        )}
+        {hasExportableContent(model) && <ExportMenu model={model} />}
+      </div>
     </header>
   );
 }
 
-function AiSections({
+/** What the pipeline is doing, when it is doing anything worth saying. */
+function PipelineStatus({
   meeting,
   intelligence,
   onRetry,
@@ -197,127 +259,139 @@ function AiSections({
   onRetry: () => void;
   retrying: boolean;
 }) {
-  const { aiStatus, insight, transcript } = intelligence;
+  const { aiStatus } = intelligence;
+
+  if (isAiInProgress(aiStatus)) return <Progress status={aiStatus} />;
+
+  if (aiStatus === 'failed') {
+    return (
+      <Card className="border-destructive/50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle aria-hidden="true" className="size-5" />
+            The summary could not be generated
+          </CardTitle>
+          <CardDescription role="alert">
+            {intelligence.aiError ?? 'Processing failed.'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {meeting.isHost ? (
+            <Button onClick={onRetry} disabled={retrying}>
+              {retrying ? (
+                <Loader2 aria-hidden="true" className="animate-spin" />
+              ) : (
+                <RotateCw aria-hidden="true" />
+              )}
+              Retry
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground">The host can retry from this page.</p>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (aiStatus === 'none' && !intelligence.insight) return <NoRecording meeting={meeting} />;
+
+  return null;
+}
+
+function MeetingTabs({
+  meeting,
+  intelligence,
+  tab,
+  onTabChange,
+  initialQuery,
+  initialTime,
+}: {
+  meeting: Meeting;
+  intelligence: MeetingIntelligence;
+  tab: Tab;
+  onTabChange: (tab: string) => void;
+  initialQuery: string;
+  initialTime: number | null;
+}) {
+  const { insight, transcript } = intelligence;
+  // Only the tabs that play audio pay for downloading it.
+  const source = useRecordingSource(meeting, tab === 'transcript' || tab === 'recording');
+  const openItems = insight?.actionItems.filter((item) => item.status !== 'done').length ?? 0;
+  const pending = isAiInProgress(intelligence.aiStatus);
 
   return (
-    <div className="space-y-6">
-      {aiStatus === 'none' && !insight && <NoRecording meeting={meeting} />}
-      {isAiInProgress(aiStatus) && <Progress status={aiStatus} />}
-      {aiStatus === 'failed' && (
-        <Card className="border-destructive/50">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle aria-hidden="true" className="size-5" />
-              The summary could not be generated
-            </CardTitle>
-            <CardDescription role="alert">
-              {intelligence.aiError ?? 'Processing failed.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {meeting.isHost ? (
-              <Button onClick={onRetry} disabled={retrying}>
-                {retrying ? (
-                  <Loader2 aria-hidden="true" className="animate-spin" />
-                ) : (
-                  <RotateCw aria-hidden="true" />
-                )}
-                Retry
-              </Button>
-            ) : (
-              <p className="text-sm text-muted-foreground">The host can retry from this page.</p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+    <Tabs value={tab} onValueChange={onTabChange} className="space-y-4">
+      {/* Wraps onto a second row on a phone rather than scrolling sideways,
+          so no tab is ever hidden off-screen. */}
+      <TabsList className="h-auto w-full flex-wrap justify-start sm:w-fit">
+        <TabsTrigger value="summary" className="flex-none">
+          Summary
+        </TabsTrigger>
+        <TabsTrigger value="actions" className="flex-none">
+          {/* The space keeps the accessible name "Action items 2 open"; flex
+              layout drops it visually. */}
+          Action items{' '}
+          {openItems > 0 && (
+            <Badge variant="secondary" className="px-1.5">
+              {openItems}
+              <span className="sr-only"> open</span>
+            </Badge>
+          )}
+        </TabsTrigger>
+        <TabsTrigger value="transcript" className="flex-none">
+          Transcript
+        </TabsTrigger>
+        <TabsTrigger value="chat" className="flex-none">
+          Chat
+        </TabsTrigger>
+        <TabsTrigger value="recording" className="flex-none">
+          Recording
+        </TabsTrigger>
+      </TabsList>
 
-      {insight && (
-        <>
-          <section aria-labelledby="summary-heading" className="rounded-xl border bg-card p-5">
-            <h2 id="summary-heading" className="flex items-center gap-2 font-semibold">
-              <Sparkles aria-hidden="true" className="size-4 text-primary" />
-              Summary
-            </h2>
-            <p className="mt-2 text-sm leading-relaxed">{insight.summary}</p>
-          </section>
+      <TabsContent value="summary">
+        {insight ? (
+          <SummaryTab meeting={meeting} insight={insight} />
+        ) : (
+          <EmptyTab pending={pending}>The summary and key decisions appear here.</EmptyTab>
+        )}
+      </TabsContent>
+      <TabsContent value="actions">
+        {insight ? (
+          <ActionItemsTab meeting={meeting} insight={insight} />
+        ) : (
+          <EmptyTab pending={pending}>Action items and their owners appear here.</EmptyTab>
+        )}
+      </TabsContent>
+      <TabsContent value="transcript">
+        {transcript ? (
+          <TranscriptTab
+            meeting={meeting}
+            transcript={transcript}
+            source={source}
+            initialQuery={initialQuery}
+            initialTime={initialTime}
+          />
+        ) : (
+          <EmptyTab pending={pending}>The timestamped transcript appears here.</EmptyTab>
+        )}
+      </TabsContent>
+      <TabsContent value="chat">
+        <ChatLogTab meetingId={meeting.id} />
+      </TabsContent>
+      <TabsContent value="recording">
+        <RecordingTab meeting={meeting} source={source} />
+      </TabsContent>
+    </Tabs>
+  );
+}
 
-          <div className="grid gap-6 md:grid-cols-2">
-            <section aria-labelledby="decisions-heading" className="rounded-xl border bg-card p-5">
-              <h2 id="decisions-heading" className="flex items-center gap-2 font-semibold">
-                <Scale aria-hidden="true" className="size-4 text-primary" />
-                Key decisions
-              </h2>
-              {insight.keyDecisions.length === 0 ? (
-                <p className="mt-2 text-sm text-muted-foreground">No decisions were recorded.</p>
-              ) : (
-                <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm">
-                  {insight.keyDecisions.map((decision) => (
-                    <li key={decision}>{decision}</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section aria-labelledby="actions-heading" className="rounded-xl border bg-card p-5">
-              <h2 id="actions-heading" className="flex items-center gap-2 font-semibold">
-                <ListChecks aria-hidden="true" className="size-4 text-primary" />
-                Action items
-              </h2>
-              {insight.actionItems.length === 0 ? (
-                <p className="mt-2 text-sm text-muted-foreground">No action items were assigned.</p>
-              ) : (
-                <ul className="mt-2 space-y-3">
-                  {insight.actionItems.map((item, index) => (
-                    <li key={`${index}-${item.text}`} className="text-sm">
-                      <p>{item.text}</p>
-                      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                        {item.assigneeName ? (
-                          <Badge variant={item.assigneeId ? 'secondary' : 'outline'}>
-                            {item.assigneeName}
-                            {/* A name the model heard that matches nobody in
-                                the meeting: shown, but flagged for the host. */}
-                            {!item.assigneeId && ' (not a participant)'}
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline">Unassigned</Badge>
-                        )}
-                        {item.dueDate && <span>Due {formatDue(item.dueDate)}</span>}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
-        </>
-      )}
-
-      {transcript && (
-        <section aria-labelledby="transcript-heading" className="rounded-xl border bg-card p-5">
-          <h2 id="transcript-heading" className="flex items-center gap-2 font-semibold">
-            <ScrollText aria-hidden="true" className="size-4 text-primary" />
-            Transcript
-          </h2>
-          <ol className="mt-3 max-h-[28rem] space-y-2 overflow-y-auto pr-2 text-sm">
-            {transcript.segments.map((segment, index) => (
-              <li key={`${index}-${segment.start}`} className="flex gap-3">
-                <span className="w-12 shrink-0 font-mono text-xs leading-5 text-muted-foreground">
-                  {formatOffset(segment.start)}
-                </span>
-                <p className="min-w-0">
-                  {segment.speaker && <span className="font-medium">{segment.speaker}: </span>}
-                  {segment.text}
-                </p>
-              </li>
-            ))}
-          </ol>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Generated by {insight?.provider ?? transcript.provider}. AI output can be wrong; check
-            owners and dates before acting on them.
-          </p>
-        </section>
-      )}
-    </div>
+function EmptyTab({ pending, children }: { pending: boolean; children: ReactNode }) {
+  return (
+    <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+      {pending ? 'Still processing. ' : 'Nothing yet. '}
+      {children}
+    </p>
   );
 }
 
@@ -335,13 +409,6 @@ function NoRecording({ meeting }: { meeting: Meeting }) {
             : 'The summary appears here after the host records the meeting.'}
         </CardDescription>
       </CardHeader>
-      {meeting.status === 'live' && (
-        <CardContent>
-          <Button asChild variant="outline">
-            <Link to={`/app/room/${meeting.roomCode}`}>Open the meeting room</Link>
-          </Button>
-        </CardContent>
-      )}
     </Card>
   );
 }
