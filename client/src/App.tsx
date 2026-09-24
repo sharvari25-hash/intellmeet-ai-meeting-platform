@@ -1,6 +1,5 @@
 import { Suspense, lazy } from 'react';
 import { Route, Routes } from 'react-router-dom';
-import { ComingSoon } from '@/components/ComingSoon';
 import { FullPageSpinner } from '@/components/Spinner';
 import { LoginPage } from '@/features/auth/LoginPage';
 import { RegisterPage } from '@/features/auth/RegisterPage';
@@ -53,6 +52,12 @@ const MeetingDetailPage = lazy(() =>
 const TasksPage = lazy(() =>
   import('@/features/tasks/TasksPage').then((module) => ({ default: module.TasksPage })),
 );
+// Recharts is the biggest dependency after the PDF engine; only this page uses it.
+const AnalyticsPage = lazy(() =>
+  import('@/features/analytics/AnalyticsPage').then((module) => ({
+    default: module.AnalyticsPage,
+  })),
+);
 // The room carries the WebRTC stack with it, so it is its own chunk: nobody
 // downloads a mesh transport to read the dashboard.
 const RoomPage = lazy(() =>
@@ -71,9 +76,9 @@ const RoomPage = lazy(() =>
  *   page inside it inherits the sidebar, the bell and the theme toggle
  *   without repeating them.
  *
- * Routes whose feature lands in a later phase are wired now with an honest
- * placeholder: the navigation, the guards and the layout are then exercised
- * end to end from this phase onward, instead of being bolted together later.
+ * Every page behind the navigation is a lazy chunk of its own (the ones that
+ * arrived in later phases were placeholders until then, so the navigation,
+ * the guards and the layout were exercised end to end from the start).
  */
 export default function App() {
   useSessionBootstrap();
@@ -108,14 +113,7 @@ export default function App() {
           <Route path="meetings/:meetingId" element={<MeetingDetailPage />} />
           <Route path="room/:roomCode" element={<RoomPage />} />
           <Route path="tasks" element={<TasksPage />} />
-          <Route
-            path="analytics"
-            element={
-              <ComingSoon title="Analytics" phase="Phase 9">
-                Meeting time, participation and follow-through across the team.
-              </ComingSoon>
-            }
-          />
+          <Route path="analytics" element={<AnalyticsPage />} />
         </Route>
       </Route>
 
