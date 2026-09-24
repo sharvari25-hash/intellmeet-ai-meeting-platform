@@ -18,6 +18,16 @@ Object.defineProperty(window, 'matchMedia', {
   }),
 });
 
+// jsdom has no ResizeObserver either; charts (Recharts) measure with it.
+// Nothing in the suite depends on a real size change.
+if (!('ResizeObserver' in globalThis)) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 beforeEach(() => {
   // The auth store and the refresh queue are module-level singletons, so a
   // session left behind by one test would silently change the next one's
