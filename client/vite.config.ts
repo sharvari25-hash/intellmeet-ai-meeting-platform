@@ -26,6 +26,13 @@ export default defineConfig({
       '@': path.resolve(import.meta.dirname, './src'),
     },
   },
+  // Only reachable through the lazily loaded task page, so Vite's start-up
+  // scan never sees them. Without this the dev server finds them on the first
+  // visit to /app/tasks, re-bundles, and reloads the page mid-navigation
+  // (which the Phase 8 e2e run caught). Development only; the build is unaffected.
+  optimizeDeps: {
+    include: ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
+  },
   server: {
     port: 5173,
     // Bind to every interface in HTTPS mode so a phone on the same WiFi can
