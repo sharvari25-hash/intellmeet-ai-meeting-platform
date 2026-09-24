@@ -49,9 +49,16 @@ export const SOCKET_EVENTS = {
   AI_STATUS: 'ai:status',
 
   // --- Kanban board (Phase 8) ---
+  /** Client -> server: send me this board's live updates / stop. */
+  BOARD_JOIN: 'board:join',
+  BOARD_LEAVE: 'board:leave',
+  /** Server -> board room: reload the whole board (columns changed, reset). */
+  BOARD_REFRESH: 'board:refresh',
   TASK_CREATED: 'task:created',
   TASK_UPDATED: 'task:updated',
   TASK_MOVED: 'task:moved',
+  TASK_DELETED: 'task:deleted',
+  TASK_COMMENTED: 'task:commented',
 
   // --- Transport-level ---
   ERROR: 'socket:error',

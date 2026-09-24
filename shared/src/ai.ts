@@ -107,6 +107,18 @@ export const actionItemSchema = z.object({
   status: z.enum(ACTION_ITEM_STATUSES),
   /** The Kanban task created from this item (Phase 8). */
   taskId: objectIdSchema.nullable(),
+  /**
+   * Where that task is now, so the meeting page can say "In Progress" rather
+   * than only "a task exists". Read live from the board; null without a task.
+   */
+  task: z
+    .object({
+      id: objectIdSchema,
+      boardId: objectIdSchema,
+      columnTitle: z.string(),
+      isDone: z.boolean(),
+    })
+    .nullable(),
 });
 export type ActionItem = z.infer<typeof actionItemSchema>;
 
