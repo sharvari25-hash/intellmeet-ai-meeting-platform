@@ -5,6 +5,248 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 7 — Post-Meeting Dashboard & History ✅
+
+**Completed:** 2026-09-24
+
+### Before Phase 7: every demo sign-in is now a different person
+
+**Symptom:** every "Try Live Demo" signed into the same seeded Demo User. Two
+windows, or two reviewers, were one person: both were host of each other's
+meetings (either could press **End for all** on the other), the participant
+list showed "Demo User" twice, and the AI gave every action item to "Demo
+User".
+
+**Options considered.**
+
+| Option | Verdict |
+| --- | --- |
+| Keep one account, make "host" per-session | Host, ownership, notifications and AI owners are all keyed on the user id. Faking separate people inside one account would touch every one of them and still leave the AI unable to tell anyone apart. |
+| A pool of pre-seeded demo accounts, handed out in turn | Needs a lease and a release, and still collides once more reviewers arrive than there are accounts. |
+| **A new guest account per sign-in** | Chosen. |
+
+**Design.** `POST /api/auth/demo` now creates a guest (`authProvider:
+'guest'`) and signs in as it:
+
+- **Friendly generated name**, colour plus animal ("Amber Otter"). Colours
+  double as plausible first names, which matters because the AI addresses
+  people by first name and owners are matched back by those names. A new name
+  never shares a word with anyone already in the team: "Amber Otter" and
+  "Amber Heron" together would make "Amber will do it" a tie, and a tie is
+  assigned to *nobody*.
+- **A member of the seeded demo team**, so the sample meetings are visible
+  immediately, and a plain *member*: it can hold, record and end its own
+  meetings, but cannot remove the seeded team-mates, promote itself, or edit
+  the sample meetings (their host is the seeded Demo User).
+- **No password** and an address under the reserved `.invalid` domain: the
+  session it starts is the only way in, and nothing can ever be emailed to it.
+- **Removed by the existing demo cleanup** once it has been idle for
+  `DEMO_DATA_TTL_HOURS` (6). *Idle*, not *old*: every sign-in and token refresh
+  pushes a refresh token stamped with its creation time, and an active tab
+  refreshes at least every 15 minutes, so "no token newer than the cutoff" is
+  "has done nothing since". A reviewer still clicking after six hours is left
+  alone. Removal takes everything only the guest could manage: meetings it
+  hosted (whatever their age; nobody could ever end or delete them again),
+  teams it owned, its notifications, and its place in the team's member list.
+  Meetings it only attended stay with their host.
+- **`DELETE /api/auth/demo`** ends a guest's session now instead of waiting:
+  the account menu offers **End demo session** to guests (with a
+  confirmation), and the e2e suite uses it to clean up. Real accounts get a
+  403; deleting those is a different feature.
+- **A ceiling** (`DEMO_MAX_GUESTS`, 200): the endpoint is public and creates
+  an account, so the rate limiter bounds one IP and the ceiling bounds
+  everyone. At the ceiling a demo sign-in gets a 503 until the sweep has made
+  room.
+
+**Tests:** every sign-in is a different, friendly-named guest; guests are
+plain members who see the samples; a second guest gets 403 on the first's
+"end for all"; six guests share no name word; no password sign-in; the
+ceiling; `DELETE` removes the guest, its meetings and membership and kills the
+cookie, and refuses real accounts; the sweep removes idle guests with their
+data, keeps active and brand-new ones, removes signed-out ones, never touches
+the seeded persona or a real account; the account menu's confirm flow; and a
+new e2e spec, two browsers pressing "Try Live Demo" and meeting each other,
+where only one sees **End for all**. The session-family tests that used to run
+on the shared demo account now run on a normal account signed in several
+times, which is the case they actually protect.
+
+**E2E cleanup.** `signInAsDemo` records each guest the moment the server
+answers (in a per-run file that global setup hands to the workers), and global
+teardown ends each guest's session, which deletes the meetings it hosted. A
+run now leaves the workspace exactly as it found it; verified against the
+local database after every run in this phase.
+
+### Built
+
+- **Meeting history** (`/app/meetings`): All / Upcoming / Live / Past filters
+  (each in its natural order: upcoming soonest first, past most recently
+  ended first), a team picker for people in more than one team, pagination,
+  and search. All of it lives in the URL, so a search survives a reload and
+  can be shared.
+- **Search across titles, summaries and transcripts**, on the three text
+  indexes Phase 6 created (Meeting, MeetingInsight, Transcript). Results are
+  ranked by relevance, and each row says *why* it matched: the summary
+  sentence, the decision, or the transcript line with its timestamp, with the
+  searched words marked. A transcript match links straight to that moment.
+- **History rows** show the start of the summary and what the meeting
+  produced ("2 decisions · 4 action items, 3 open"), which is what tells one
+  weekly sync from the next.
+- **The meeting page, grown into tabs:** Summary (with key decisions), Action
+  items, Transcript, Chat, Recording. The open tab is in the URL
+  (`?tab=transcript&t=252&q=pricing`).
+  - **Transcript:** searchable (filters to matching lines and highlights),
+    and with a recording every timestamp is a **Play from** button that seeks
+    the audio. The line being played is highlighted.
+  - **Chat log:** the meeting's chat, oldest first, with "Load earlier
+    messages" on the existing cursor.
+  - **Recording:** the audio, with a download link.
+  - **Action items:** a "Create task" button per item, disabled and explained
+    until the task board exists in Phase 8.
+- **Host editing of the AI output** (`PATCH /api/meetings/:id/insight`):
+  the summary, the decisions, and each action item's text, owner, due date and
+  done state, plus adding, removing and reordering items. Ticking an item off
+  is one click. Edited output says so ("Edited by … on …").
+- **Export:** Copy summary (plain text with bullets, ready for chat),
+  Markdown (with a GitHub task list and a timestamped transcript) and PDF
+  (`@react-pdf/renderer`, built in the browser, loaded only when asked for).
+- **Seeded meetings show up well:** each sample meeting now has a short chat
+  log, and its action items have stable ids.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Query the three text indexes and merge, rather than one combined index** | MongoDB allows one text index per collection, and the text lives in three. A denormalised "search document" would need keeping in sync with three writers (the meeting, the AI pipeline and host edits). Three indexed queries in parallel are cheap at this scale. |
+| **Insight and transcript searches are scoped to the caller's meeting ids** | Those collections span every tenant. Searching them unscoped and filtering afterwards would rank other teams' meetings and could push the caller's out of the candidate limit. The next step at scale is `teamId` on both, prefixing their text indexes. |
+| **Weighted merge: title ×3, summary/decisions ×2, transcript ×1** | Mongo's text scores are only comparable within one index, so the weights are a judgement: a word in the title is the strongest sign a meeting is about it. Ties fall back to recency, so pages never overlap. |
+| **The server says why each meeting matched** | Mongo reports *that* a document matched, not *where*. The server re-finds the words in the page's rows only (summary first, transcripts only for rows nothing else explained, since they are the largest documents). |
+| **One term reader, shared by server and client** (`shared/src/search.ts`) | The snippet the server picks and the words the client highlights must agree. Mongo stems ("planning" matches "we planned"), so both use the same small approximation: strip a suffix, match words starting with what is left. |
+| **List rows carry a summary preview, loaded with one query per page** | The history is only useful if rows can be told apart. Building the page's meeting views now also loads every host and participant in one `$in`, rather than one query per row. |
+| **Edits replace whole lists** | The form holds the full list anyway, and "replace" has no merge or ordering semantics to get wrong. |
+| **Action items got stable ids** | So an edit can say which item it changes, and a Phase 8 task can point at the item it came from even after the host rewords the list. A kept item keeps its task link; an id the client made up can never adopt another item's task. |
+| **Owners must be members of the meeting's team; names come from the account** | They must be able to see the meeting their task came from, and a client cannot relabel somebody. An owner the item already had is let through even if they have since left, so an unrelated edit does not fail on them. |
+| **Editing is host-only, and refused while the AI is running** | The host is accountable for the minutes, and the pipeline is about to overwrite the insight. A fresh AI run clears the "edited" marker along with the edits. |
+| **Guests cannot edit the sample meetings** | They are shared by every reviewer. To try editing, record a short meeting of your own (the mock AI answers in seconds). The page tells a non-host who can edit, instead of leaving them looking for a button. |
+| **Recording player is the browser's `<audio>`, not Cloudinary's player** | Recordings are audio only; the native player is accessible with no extra script. A Cloudinary URL plays directly; a locally stored one is fetched with the bearer token and played from an object URL, because the token must never go in a URL. |
+| **Exports are built in the browser** | No server-side renderer on Render's free tier, nothing leaves the device, and the page already holds all the data. |
+| **The PDF engine is its own lazy chunk** | 455 kB gzipped. Nobody downloads it until they press PDF; the meeting page chunk is 11 kB. |
+| **PDF uses the built-in Helvetica** | No font download. The cost is Windows-1252 characters only: accents are transliterated and anything else becomes "?". Markdown keeps every character. |
+| **URL state for filters, search, page and tab** | Back and reload work, and a search result can deep-link into a transcript. |
+
+### Bugs found while building
+
+1. **Recordings stored without Cloudinary could never be played back.**
+   `GET /api/meetings/:id/recording/audio` answered 500 for every local
+   recording. `res.sendFile` refuses any path containing a dot-segment, and
+   the default directory is `server/.data/recordings`. Phase 6's test passed
+   only because the suite kept recordings in a temp directory without a dot;
+   nothing in the UI played audio until now. Fixed by serving the file name
+   under `root` (only the name, already pinned to `<meetingId>-<ts>.<ext>`, is
+   checked). The test setup now stores recordings under a `.data` directory
+   like the real default, which reproduced the 500 before the fix. A file that
+   has gone (Render wipes its disk on deploy) now answers 404 rather than 500,
+   with a JSON body labelled as JSON rather than as audio.
+2. **Legacy action items got a new random id on every read.** Mongoose
+   invents an `_id` for an array subdocument stored without one, differently
+   each time it hydrates it (verified in a scratch database). Insights are now
+   read `lean`; items stored before ids existed get a positional `legacy-N`
+   id until their first edit writes real ones. Re-running the seed gives the
+   sample meetings real ids.
+3. **react-pdf: four layout faults, found by exporting and looking at the
+   file.** A `fixed` footer View was never drawn (a `fixed` Text is); page
+   numbers through the `render` prop are never painted in 4.9, even in the
+   documented form, so they were dropped; names were hyphenated ("Alan
+   Tur-ing"); and a transcript line could split from its timestamp across a
+   page break (`wrap={false}` per line).
+4. **`highlight.ts` beside `Highlight.tsx`** would have been one file on
+   Windows' case-insensitive filesystem, with `./Highlight` resolving to the
+   `.ts`. Renamed to `textMatch.ts` before it bit.
+
+### Known limitations
+
+- **No page numbers in the PDF** (see bug 3). The meeting title repeats on
+  every page instead.
+- **PDF text is Western European only** (built-in fonts). Markdown export and
+  the page itself handle any script.
+- **Search reads up to 200 candidates per index** and fetches the ids of every
+  meeting in the caller's teams to scope the insight and transcript queries.
+  Fine for thousands of meetings; the scaling step is noted above.
+- **Snippets use a stemming approximation.** When Mongo's stemmer matches a
+  form the approximation does not, the row simply has no snippet.
+- **Edits are not pushed live.** Other people viewing the page see a
+  correction on their next load. A new recording of the same meeting replaces
+  the AI output, corrections included.
+- **The sample meetings have no audio**, so click-to-seek can only be tried on
+  a meeting you record. Their transcripts are still searchable and
+  timestamped.
+- **Transcripts are not editable**; the design review in the samples parks the
+  same question.
+- **"Create task" is disabled until Phase 8.**
+- **Two tabs of one browser profile share the refresh cookie**, so a second
+  "Try Live Demo" in the same profile replaces the first guest in both tabs at
+  the next token refresh. The landing page says to use a private window.
+- **The e2e suite uses ~20 of the 30 auth requests** one IP may make in 15
+  minutes (every page load refreshes the session). Global setup resets the
+  counters; manual sign-ins alongside a run can still exhaust them.
+- **Six orphaned chat messages** from Phase 6 e2e runs (23 Sep, before this
+  phase) remain in the local database; their meetings were deleted before the
+  cascade existed. Harmless; not created by this phase.
+
+### Manual test script
+
+Prerequisites: `docker compose up -d`, `npm run seed -w @intellmeet/server`
+(**re-run it once**: it adds the sample chat and action-item ids), `npm run dev`.
+
+1. <http://localhost:5173> → **Try Live Demo**. The account menu shows a
+   generated name ("Amber Otter") and "Demo guest".
+2. **Meetings** in the sidebar. Type `pricing`: *Q3 launch retrospective*,
+   with the summary sentence and "pricing" marked. Press **Upcoming**: nothing
+   matches; **Past**: it is back.
+3. Search `interviews`: the design review, with **Transcript 00:30** and a
+   **Jump to 00:30** link. Follow it: the Transcript tab opens with the line
+   highlighted and the search filled in. Open **Chat**: the sample chat.
+4. **Summary** tab: no Edit button, and a note that only Demo User (the
+   sample's host) can correct it. **Copy summary** and paste somewhere;
+   **Export → Markdown** and **Export → PDF** download files that open.
+5. Private window: **Try Live Demo** again. It is a different name. Window 1:
+   **New meeting** → **Start now** → **Join**; copy the invite link into window
+   2 and join. Only window 1 has **Record**, **Mute all** and **End for all**.
+6. Window 1: **Record** for ten seconds, **Stop recording**, **End for all** →
+   **Summary and action items**. When the summary appears (mock AI, seconds):
+   **Edit summary**, change it, **Save changes** → "Edited by …". **Action
+   items**: tick one off; **Edit action items** to reassign one, date it, add
+   one. **Transcript**: press a timestamp and the recording plays from there.
+7. Window 2 reloads the meeting page and sees the corrected summary.
+8. Account menu → **End demo session** → confirm. The guest and its meeting
+   are gone; the sample meetings are untouched.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **476 passed** (329 server, 147 client) |
+| `npm run test:e2e` | ✅ **5 passed**, twice in a row: demo identity, history search + export, mesh, controls, record → AI → edit → export |
+| Server coverage | ✅ **91.9% statements**, 83.1% branches |
+| Exported PDFs | ✅ opened and read: one-page (recorded) and two-page (sample) |
+| Horizontal overflow at 360px | ✅ none: history, and every meeting tab |
+| `npm run build` | ✅ all 3 workspaces; PDF engine in its own lazy chunk |
+
+The e2e runs used a temporary API (port 5100) and client (port 5190) started
+for the purpose and stopped afterwards: the `tsx watch` in the running dev
+terminals had stopped reloading (no restart for any edit after 06:35), so the
+API on port 5000 was serving stale code. Its terminals were left alone.
+
+### Next phase
+
+**Phase 8 — Team Workspace, Kanban & Tasks:** boards per team, task CRUD,
+drag and drop with fractional ordering and live board sync, and the "Create
+task" button this phase left disabled, turning an action item (by its new
+stable id) into a task with the owner pre-filled.
+
+---
+
 ## Phase 6 — Recording & AI Meeting Intelligence ✅
 
 **Completed:** 2026-09-24
@@ -212,7 +454,9 @@ the script prints every pairing so the numbers can be checked by reading.
   does not delete its Cloudinary asset.
 - **The recording can't be played back in the UI yet.** `GET
   /api/meetings/:id/recording/audio` exists (with Range support), but it needs
-  the bearer token, so the Phase 7 player will fetch it as a blob.
+  the bearer token, so the Phase 7 player will fetch it as a blob. *(Phase 7:
+  done, and it turned out the endpoint answered 500 for every local
+  recording; see the Phase 7 log.)*
 - **Very long transcripts** (over 48k characters, ≈ 90 minutes) have their
   middle elided before analysis; the opening and closing are kept.
 - **The mock cannot hear.** With `AI_PROVIDER=mock` every recording produces
