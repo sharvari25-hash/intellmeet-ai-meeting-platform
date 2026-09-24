@@ -269,3 +269,82 @@ sequenceDiagram
   Permanent errors (deleted meeting, missing file, rejected key) stop at once.
   The final failure stores a UI-safe message built from status codes, never
   from provider responses.
+
+---
+
+## Meeting history search
+
+The words a person remembers from a meeting are rarely in its title. Search
+therefore covers the three places text lives, each with its own MongoDB text
+index (one per collection is all Mongo allows):
+
+| Collection | Indexed fields | Weight in the ranking |
+| --- | --- | --- |
+| `meetings` | title, description | ×3 |
+| `meetinginsights` | summary, key decisions | ×2 |
+| `transcripts` | full text | ×1 |
+
+```mermaid
+sequenceDiagram
+    participant C as Client (history page)
+    participant API as GET /api/meetings?q=
+    participant M as meetings
+    participant I as meetinginsights
+    participant T as transcripts
+
+    C->>API: q, status, team, page
+    API->>M: ids of meetings in the caller's teams (+ status)
+    par three text searches
+        API->>M: $text within scope, textScore
+        API->>I: $text where meetingId in scope
+        API->>T: $text where meetingId in scope
+    end
+    API->>API: merge: 3×title + 2×summary + 1×transcript, ties by date
+    API->>M: load one page of meetings (+ people in one $in)
+    API->>I: previews and match sentences for that page
+    API->>T: transcript lines, only for rows nothing else explained
+    API-->>C: rows with preview + match {source, snippet, offsetSec}
+```
+
+**Authorisation is the scope, applied first.** Insights and transcripts span
+every tenant, so their searches are restricted to the caller's meeting ids
+before ranking. Searching them unscoped and filtering afterwards would rank
+other teams' meetings and could crowd the caller's out of the candidate limit
+(200 per index). At larger scale the next step is to copy `teamId` onto
+insights and transcripts and make it a prefix of their text indexes.
+
+**Why the server explains each match.** A text index says *that* a document
+matched, not *where*. For the page being returned, the server re-finds the
+query's words — summary sentence first, then decisions, then a transcript line
+(with its timestamp, so the row can link to that moment). Mongo stems words
+("planning" matches "we planned"), so the server and the client share one
+small approximation in `shared/src/search.ts`: the snippet the server picks and
+the words the client highlights always agree.
+
+---
+
+## Demo identity: a guest per sign-in
+
+`POST /api/auth/demo` creates a guest account for every sign-in rather than
+handing everyone one shared account:
+
+```
+Try Live Demo ──► createDemoGuest()
+                    ├─ name: colour + animal, no word shared with the team
+                    ├─ authProvider "guest", no password, @guest.intellmeet.invalid
+                    ├─ member (not admin) of the seeded demo team
+                    └─ ceiling: DEMO_MAX_GUESTS
+                  startSession() ──► access token + refresh cookie
+```
+
+Everything else — host checks, notifications, AI owner matching — already
+keyed on the user id, so making each reviewer a real user fixed "two windows
+are the same person" without special cases anywhere else.
+
+A guest can never sign back in once its session ends, so whatever it hosted
+would become unmanageable. `removeGuests()` (in the demo cleanup module)
+therefore deletes a guest together with the meetings it hosted and the teams
+it owned, whatever their age, and takes it out of every team's member list. It
+runs from two places: the periodic sweep, for guests idle longer than
+`DEMO_DATA_TTL_HOURS` (idle meaning no refresh token issued since the cutoff),
+and `DELETE /api/auth/demo`, when a guest ends their own session.

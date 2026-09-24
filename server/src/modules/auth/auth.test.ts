@@ -1,9 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { REFRESH_COOKIE_NAME, apiErrorSchema, authResponseSchema } from '@intellmeet/shared';
+import {
+  REFRESH_COOKIE_NAME,
+  apiErrorSchema,
+  authResponseSchema,
+  type AuthResponse,
+} from '@intellmeet/shared';
 import { createApp } from '../../app.js';
 import { env } from '../../config/env.js';
 import { resetRateLimits } from '../../middleware/rateLimit.js';
+import { DEMO_TEAM_SLUG } from '../demo/demo.constants.js';
+import { Meeting } from '../meetings/meeting.model.js';
+import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
 import {
   VALID_PASSWORD,
@@ -239,22 +247,28 @@ describe('POST /api/auth/refresh', () => {
   });
 });
 
-describe('session isolation on the shared demo account', () => {
-  let demoUserId: string;
+/**
+ * One account signed in from several places at once: a laptop and a phone, or
+ * a seeded team-mate that several reviewers use for the second seat in a call.
+ */
+describe('session isolation between sign-ins of one account', () => {
+  let shared: Awaited<ReturnType<typeof registerUser>>;
 
-  /** Signs in via /demo and returns the refresh cookie for that session. */
-  async function demoSession(): Promise<string> {
-    const response = await request(app).post('/api/auth/demo').expect(200);
+  /** Signs in again and returns the refresh cookie for that new session. */
+  async function signIn(): Promise<string> {
+    const response = await request(app)
+      .post('/api/auth/login')
+      .send({ email: shared.email, password: shared.password })
+      .expect(200);
     return extractRefreshCookie(response.headers['set-cookie'] as unknown as string[]);
   }
 
   beforeEach(async () => {
-    const demo = await registerUser(app, { name: 'Demo User', email: 'demo@intellmeet.app' });
-    demoUserId = demo.id;
+    shared = await registerUser(app, { name: 'Ada Lovelace' });
   });
 
   it('treats two concurrent refreshes of the same token as a race, not theft', async () => {
-    const session = await demoSession();
+    const session = await signIn();
 
     // Two tabs, each its own JavaScript context, refresh with the same cookie
     // at the same moment. Neither is an attack.
@@ -274,9 +288,9 @@ describe('session isolation on the shared demo account', () => {
     await request(app).post('/api/auth/refresh').set('Cookie', secondCookie).expect(200);
   });
 
-  it('keeps one reviewer signed in when another reviewer triggers reuse detection', async () => {
-    const reviewerA = await demoSession();
-    const reviewerB = await demoSession();
+  it('keeps one session signed in when another triggers reuse detection', async () => {
+    const reviewerA = await signIn();
+    const reviewerB = await signIn();
 
     // Reviewer A rotates, then replays the old token long after the window.
     const rotated = await request(app)
@@ -287,7 +301,7 @@ describe('session isolation on the shared demo account', () => {
       rotated.headers['set-cookie'] as unknown as string[],
     );
 
-    await expireGraceWindow(demoUserId);
+    await expireGraceWindow(shared.id);
     await request(app).post('/api/auth/refresh').set('Cookie', reviewerA).expect(401);
 
     // Reviewer A's own family is gone...
@@ -298,16 +312,16 @@ describe('session isolation on the shared demo account', () => {
     await request(app).post('/api/auth/refresh').set('Cookie', reviewerB).expect(200);
   });
 
-  it('gives every /demo sign-in its own token family', async () => {
-    await demoSession();
-    await demoSession();
-    await demoSession();
+  it('gives every sign-in its own token family', async () => {
+    await signIn();
+    await signIn();
+    await signIn();
 
-    const stored = await User.findById(demoUserId).select('+refreshTokens');
+    const stored = await User.findById(shared.id).select('+refreshTokens');
     const tokens = stored?.refreshTokens ?? [];
     const families = new Set(tokens.map((token) => token.familyId));
 
-    // Four sign-ins: the registration in beforeEach plus three /demo calls.
+    // Four sign-ins: the registration in beforeEach plus three logins.
     // Nothing has rotated yet, so one token per family is exactly right.
     expect(tokens).toHaveLength(4);
     expect(families.size).toBe(4);
@@ -456,20 +470,199 @@ describe('login rate limiting', () => {
   });
 });
 
+/**
+ * What `npm run seed` leaves behind, reduced to what the demo login needs:
+ * the seeded persona, a real team-mate, the team, and one sample meeting.
+ */
+async function seedDemoWorkspace() {
+  const persona = await registerUser(app, { name: 'Demo User', email: 'demo@intellmeet.app' });
+  const ada = await registerUser(app, { name: 'Ada Lovelace' });
+
+  const team = await Team.create({
+    name: 'IntellMeet Demo Team',
+    slug: DEMO_TEAM_SLUG,
+    ownerId: persona.id,
+    members: [
+      { userId: persona.id, role: 'admin', joinedAt: new Date() },
+      { userId: ada.id, role: 'admin', joinedAt: new Date() },
+    ],
+  });
+
+  const sample = await Meeting.create({
+    teamId: team._id,
+    title: 'Sprint 14 planning',
+    hostId: persona.id,
+    roomCode: 'SEED234',
+    status: 'ended',
+    seeded: true,
+  });
+
+  return { persona, ada, team, sample };
+}
+
+/** "Try Live Demo": returns the guest's auth payload and refresh cookie. */
+async function demoSignIn() {
+  const response = await request(app).post('/api/auth/demo').expect(201);
+  return {
+    auth: response.body as AuthResponse,
+    cookie: extractRefreshCookie(response.headers['set-cookie'] as unknown as string[]),
+  };
+}
+
 describe('POST /api/auth/demo', () => {
-  it('reports the feature as unavailable when the demo user is not seeded', async () => {
+  it('reports the feature as unavailable when the demo workspace is not seeded', async () => {
     const response = await request(app).post('/api/auth/demo').expect(503);
 
     expect(response.body.error.code).toBe('SERVICE_UNAVAILABLE');
     expect(response.body.error.message).toContain('seed');
   });
 
-  it('signs in as the demo account without any credentials once seeded', async () => {
-    await registerUser(app, { name: 'Demo User', email: 'demo@intellmeet.app' });
+  it('makes every sign-in a different guest, with a friendly name', async () => {
+    await seedDemoWorkspace();
 
-    const response = await request(app).post('/api/auth/demo').expect(200);
+    const first = await demoSignIn();
+    const second = await demoSignIn();
 
-    expect(authResponseSchema.safeParse(response.body).success).toBe(true);
-    expect(response.body.user.email).toBe('demo@intellmeet.app');
+    expect(authResponseSchema.safeParse(first.auth).success).toBe(true);
+    // The bug this replaces: every "Try Live Demo" used to be the same person.
+    expect(first.auth.user.id).not.toBe(second.auth.user.id);
+    expect(first.auth.user.name).not.toBe(second.auth.user.name);
+
+    for (const { auth } of [first, second]) {
+      expect(auth.user.authProvider).toBe('guest');
+      expect(auth.user.name).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
+      // Never the seeded persona's identity.
+      expect(auth.user.email).not.toBe('demo@intellmeet.app');
+      expect(auth.user.email).toMatch(/@guest\.intellmeet\.invalid$/);
+    }
+  });
+
+  it('puts the guest in the seeded team as a plain member, where the samples are', async () => {
+    const { team, sample } = await seedDemoWorkspace();
+    const { auth } = await demoSignIn();
+    const guest = { accessToken: auth.accessToken };
+
+    const teams = await request(app).get('/api/teams').set('Authorization', bearer(guest));
+    expect(teams.body.teams).toHaveLength(1);
+    expect(teams.body.teams[0].id).toBe(team._id.toString());
+    // Not an admin: a guest cannot remove the seeded team-mates or promote itself.
+    expect(teams.body.teams[0].myRole).toBe('member');
+
+    const meetings = await request(app).get('/api/meetings').set('Authorization', bearer(guest));
+    expect(meetings.body.meetings.map((m: { id: string }) => m.id)).toContain(
+      sample._id.toString(),
+    );
+  });
+
+  it('does not make one guest the host of another guest’s meeting', async () => {
+    const { team } = await seedDemoWorkspace();
+    const alice = await demoSignIn();
+    const bob = await demoSignIn();
+
+    const created = await request(app)
+      .post('/api/meetings')
+      .set('Authorization', bearer(alice.auth))
+      .send({ teamId: team._id.toString(), title: 'Two reviewers' })
+      .expect(201);
+    const meetingId = created.body.meeting.id as string;
+
+    const asBob = await request(app)
+      .get(`/api/meetings/${meetingId}`)
+      .set('Authorization', bearer(bob.auth))
+      .expect(200);
+    expect(asBob.body.meeting.isHost).toBe(false);
+
+    // The "End for all" that one reviewer could once press on the other.
+    await request(app)
+      .post(`/api/meetings/${meetingId}/end`)
+      .set('Authorization', bearer(bob.auth))
+      .expect(403);
+  });
+
+  it('avoids giving two guests in the team a name that shares a word', async () => {
+    await seedDemoWorkspace();
+
+    const names: string[] = [];
+    for (let i = 0; i < 6; i += 1) names.push((await demoSignIn()).auth.user.name);
+
+    const words = names.flatMap((name) => name.split(' '));
+    expect(new Set(words).size).toBe(words.length);
+  });
+
+  it('creates a guest that cannot be signed into with a password', async () => {
+    await seedDemoWorkspace();
+    const { auth } = await demoSignIn();
+
+    await request(app)
+      .post('/api/auth/login')
+      .send({ email: auth.user.email, password: VALID_PASSWORD })
+      .expect(401);
+  });
+
+  it('refuses new guests once the ceiling is reached', async () => {
+    await seedDemoWorkspace();
+    const ceiling = env.DEMO_MAX_GUESTS;
+    env.DEMO_MAX_GUESTS = 2;
+
+    try {
+      await demoSignIn();
+      await demoSignIn();
+
+      const refused = await request(app).post('/api/auth/demo').expect(503);
+      expect(refused.body.error.message).toMatch(/busy/i);
+      expect(await User.countDocuments({ authProvider: 'guest' })).toBe(2);
+    } finally {
+      env.DEMO_MAX_GUESTS = ceiling;
+    }
+  });
+});
+
+describe('DELETE /api/auth/demo', () => {
+  it('deletes the guest, the meetings it hosted and its team membership', async () => {
+    const { team, sample } = await seedDemoWorkspace();
+    const { auth, cookie } = await demoSignIn();
+
+    const created = await request(app)
+      .post('/api/meetings')
+      .set('Authorization', bearer(auth))
+      .send({ teamId: team._id.toString(), title: 'Guest meeting' })
+      .expect(201);
+
+    const response = await request(app)
+      .delete('/api/auth/demo')
+      .set('Authorization', bearer(auth))
+      .set('Cookie', cookie)
+      .expect(204);
+
+    expect(await User.exists({ _id: auth.user.id })).toBeNull();
+    expect(await Meeting.exists({ _id: created.body.meeting.id })).toBeNull();
+    const after = await Team.findById(team._id);
+    expect(after?.members.map((m) => m.userId.toString())).not.toContain(auth.user.id);
+
+    // The shared samples are untouched.
+    expect(await Meeting.exists({ _id: sample._id })).not.toBeNull();
+
+    // The session is over: the cookie is cleared and could not refresh anyway.
+    const cleared = (response.headers['set-cookie'] as unknown as string[]).find((c) =>
+      c.startsWith(`${REFRESH_COOKIE_NAME}=`),
+    );
+    expect(cleared).toMatch(new RegExp(`^${REFRESH_COOKIE_NAME}=;`));
+    await request(app).post('/api/auth/refresh').set('Cookie', cookie).expect(401);
+  });
+
+  it('refuses to delete a real account', async () => {
+    const user = await registerUser(app);
+
+    const response = await request(app)
+      .delete('/api/auth/demo')
+      .set('Authorization', bearer(user))
+      .expect(403);
+
+    expect(response.body.error.code).toBe('FORBIDDEN');
+    expect(await User.exists({ _id: user.id })).not.toBeNull();
+  });
+
+  it('requires authentication', async () => {
+    await request(app).delete('/api/auth/demo').expect(401);
   });
 });

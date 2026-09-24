@@ -7,6 +7,7 @@ import { matchAssignee } from '../../lib/ai/assignee.js';
 import { generateCode } from '../../lib/ids.js';
 import { MeetingInsight } from '../ai/insight.model.js';
 import { Transcript } from '../ai/transcript.model.js';
+import { Message } from '../chat/message.model.js';
 import { Meeting } from '../meetings/meeting.model.js';
 
 /**
@@ -48,6 +49,20 @@ export const meetingFixtureSchema = z.object({
   host: z.string(),
   participants: z.array(z.string()).min(1),
   segments: z.array(transcriptSegmentSchema).min(1),
+  /**
+   * What was typed in the meeting's chat, so a sample meeting's chat log is
+   * not empty. `at` is seconds from the start, on the transcript's clock.
+   * Not used by the AI evaluation.
+   */
+  chat: z
+    .array(
+      z.object({
+        at: z.number().nonnegative(),
+        sender: z.string(),
+        text: z.string().min(1).max(2000),
+      }),
+    )
+    .default([]),
   reference: z.object({
     summary: z.string(),
     keyDecisions: z.array(z.string()),
@@ -188,6 +203,26 @@ export async function seedDemoMeetings(options: {
       { upsert: true },
     );
 
+    // Replaced wholesale rather than upserted line by line: the fixture is the
+    // source of truth, and re-seeding must not duplicate the conversation.
+    // Written through the driver so each message keeps its backdated time;
+    // Mongoose would stamp `createdAt` with now.
+    await Message.deleteMany({ meetingId: meeting._id });
+    const chat = fixture.chat.flatMap((line) => {
+      const sender = byName(line.sender);
+      return sender
+        ? [
+            {
+              meetingId: meeting._id,
+              senderId: new Types.ObjectId(sender.id),
+              text: line.text,
+              createdAt: new Date(startedAt.getTime() + line.at * 1000),
+            },
+          ]
+        : [];
+    });
+    if (chat.length > 0) await Message.collection.insertMany(chat);
+
     await MeetingInsight.findOneAndUpdate(
       { meetingId: meeting._id },
       {
@@ -206,6 +241,10 @@ export async function seedDemoMeetings(options: {
             };
           }),
           provider: 'seed',
+          // Re-seeding restores the reference text, so any edit is undone.
+          editedAt: null,
+          editedBy: null,
+          editedByName: null,
         },
       },
       { upsert: true },

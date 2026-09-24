@@ -1,29 +1,65 @@
+import { appendFileSync } from 'node:fs';
 import { expect, type Page } from '@playwright/test';
 
 /**
- * Steps shared by every spec: signing in as the seeded accounts, starting a
- * meeting and walking the lobby.
+ * Steps shared by every spec: signing in as a demo guest or a seeded
+ * team-mate, starting a meeting and walking the lobby.
  */
 
 export const DEMO_TEAMMATE = { email: 'ada@intellmeet.app', password: 'DemoPassword123' };
 
-/** The seeded team both accounts belong to. */
+/** The seeded team every demo guest and team-mate belongs to. */
 export const DEMO_TEAM = 'IntellMeet Demo Team';
 
+/** Names the file, set up by global setup, that records the run's guests. */
+export const DEMO_GUESTS_FILE_ENV = 'E2E_DEMO_GUESTS_FILE';
+
+/** The guest a "Try Live Demo" created, as far as a spec needs to know it. */
+export interface DemoGuest {
+  name: string;
+  accessToken: string;
+}
+
 /**
- * Signs in through the landing page's demo button.
+ * Signs in through the landing page's demo button, which creates a new guest
+ * account every time.
+ *
+ * The guest is recorded the moment the server answers, before anything else
+ * can fail, so the global teardown deletes it (and the meetings it hosted)
+ * however the test ends. Its access token lasts 15 minutes, longer than a
+ * whole run, which is why no refresh cookie needs to be kept.
  *
  * Waits on the URL, not on a heading. The sign-in page's own h1 is "Welcome
  * back" too, so asserting on the text alone passes instantly while the request
  * is still in flight - and the next navigation then cancels it.
  */
-export async function signInAsDemo(page: Page): Promise<void> {
+export async function signInAsDemo(page: Page): Promise<DemoGuest> {
   await page.goto('/');
-  await page
-    .getByRole('button', { name: /try live demo/i })
-    .first()
-    .click();
+
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (res) => res.url().endsWith('/api/auth/demo') && res.request().method() === 'POST',
+    ),
+    page
+      .getByRole('button', { name: /try live demo/i })
+      .first()
+      .click(),
+  ]);
+
+  expect(response.status()).toBe(201);
+  const body = (await response.json()) as { accessToken: string; user: { name: string } };
+  const guest = { name: body.user.name, accessToken: body.accessToken };
+  recordGuest(guest);
+
   await page.waitForURL('**/app');
+  return guest;
+}
+
+function recordGuest(guest: DemoGuest): void {
+  const file = process.env[DEMO_GUESTS_FILE_ENV];
+  // Only unset when a spec runs without the configured global setup, in which
+  // case the demo cleanup's TTL sweep is what removes the guest.
+  if (file) appendFileSync(file, `${JSON.stringify(guest)}\n`);
 }
 
 /** Signs in as a seeded team-mate, so the two contexts are different people. */

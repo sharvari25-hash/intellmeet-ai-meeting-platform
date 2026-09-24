@@ -2,10 +2,12 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 6 (recording & AI) complete. Real WebRTC
-meetings work end to end, and a recorded meeting turns itself into a
-transcript, a summary, key decisions and owned action items. Everything runs
-with no third-party accounts (`AI_PROVIDER=mock`, local recording storage).
+**Status:** 🚧 In development — Phase 7 (meeting history) complete. Real WebRTC
+meetings work end to end; a recorded meeting turns itself into a transcript, a
+summary, key decisions and owned action items; and every past meeting is
+searchable by what was said, correctable by its host, and exportable as
+Markdown or PDF. Everything runs with no third-party accounts
+(`AI_PROVIDER=mock`, local recording storage).
 
 ---
 
@@ -64,8 +66,10 @@ npm run dev
 ```
 
 Then open <http://localhost:5173> and press **Try Live Demo** — no sign-up
-needed. It drops you into a seeded team with three colleagues and three past
-meetings that already have transcripts, summaries and action items.
+needed. You get a guest identity of your own (a generated name like "Amber
+Otter") in a seeded team with three colleagues and three past meetings that
+already have transcripts, summaries, chat and action items. Press it again in a
+private window and you are a second, different person in the same team.
 
 | URL | What |
 | --- | --- |
@@ -87,7 +91,7 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm run lint:fix` | ESLint with autofix |
 | `npm run typecheck` | `tsc --noEmit` in every workspace |
 | `npm test` | Vitest suites in every workspace |
-| `npm run test:e2e` | Playwright: two browsers in one meeting (needs Docker + seed) |
+| `npm run test:e2e` | Playwright: demo identity, history search + export, two browsers in one meeting, record → AI → edit → export (needs Docker + seed; cleans up after itself). `E2E_BASE_URL` / `E2E_API_URL` point it at other ports |
 | `npm run dev:https` | Dev over HTTPS on the LAN, for testing from a phone |
 | `npm run eval:ai -w @intellmeet/server` | Scores the AI provider on the sample transcripts in `server/fixtures/` |
 | `npm run worker -w @intellmeet/server` | Standalone AI worker (only with `RUN_WORKER_IN_PROCESS=false`) |
@@ -105,7 +109,8 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | GET | `/api/health/ready` | – | Readiness (503 when a dependency is down) |
 | POST | `/api/auth/register` | – | Create an account |
 | POST | `/api/auth/login` | – | Sign in (5 attempts / 15 min per IP+email) |
-| POST | `/api/auth/demo` | – | Sign in as the seeded demo account |
+| POST | `/api/auth/demo` | – | "Try Live Demo": create a guest in the demo team and sign in as it |
+| DELETE | `/api/auth/demo` | Bearer | End a guest's demo session: delete the guest and what it hosted (guests only) |
 | POST | `/api/auth/refresh` | cookie | Rotate the refresh token |
 | POST | `/api/auth/logout` | cookie | End the session (idempotent) |
 | GET | `/api/auth/me` | Bearer | Current user |
@@ -120,7 +125,7 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | DELETE | `/api/teams/:id/members/:userId` | Bearer | Remove a member (team admin) |
 | PATCH | `/api/teams/:id/members/:userId` | Bearer | Change a member's role (team admin) |
 | POST | `/api/meetings` | Bearer | Create a meeting (schedule, or start now) |
-| GET | `/api/meetings` | Bearer | List meetings (filter, search, paginate) |
+| GET | `/api/meetings` | Bearer | Meeting history: `status`, `teamId`, `page`; `q` searches titles, summaries and transcripts and says where each matched |
 | GET | `/api/meetings/:id` | Bearer | Get a meeting |
 | GET | `/api/meetings/code/:roomCode` | Bearer | Resolve a room code (join by link) |
 | PATCH | `/api/meetings/:id` | Bearer | Edit a meeting (host) |
@@ -133,6 +138,7 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | PUT | `/api/meetings/:id/recording/file` | Bearer | Upload the raw audio when Cloudinary is not configured (host) |
 | GET | `/api/meetings/:id/recording/audio` | Bearer | The recording's audio (Range supported) |
 | GET | `/api/meetings/:id/intelligence` | Bearer | AI status, transcript and insight in one response |
+| PATCH | `/api/meetings/:id/insight` | Bearer | Correct the summary, decisions or action items (host) |
 | POST | `/api/meetings/:id/ai/retry` | Bearer | Re-queue a failed AI run (host) |
 | GET | `/api/notifications` | Bearer | List notifications + unread count |
 | PATCH | `/api/notifications/:id/read` | Bearer | Mark one read |
@@ -175,8 +181,9 @@ Signalling is relayed without being parsed — media never touches the server.
 | `/app/teams`, `/app/teams/:id` | protected | Create/join a team, members, invite link |
 | `/app/settings` | protected | Display name, theme, backend health |
 | `/app/room/:code` | protected | **Meeting room** — lobby, mesh video, screen share, chat, recording |
-| `/app/meetings/:id` | protected | **Meeting page** — live AI progress, summary, decisions, action items, transcript |
-| `/app/meetings`, `/app/tasks`, `/app/analytics` | protected | Wired and guarded; their features land in Phases 7–9 |
+| `/app/meetings` | protected | **Meeting history** — upcoming/live/past, search across titles, summaries and transcripts, pagination (all in the URL) |
+| `/app/meetings/:id` | protected | **Meeting page** — tabs for summary, action items, transcript (search, click-to-seek), chat and recording; host editing; export |
+| `/app/tasks`, `/app/analytics` | protected | Wired and guarded; their features land in Phases 8–9 |
 
 **Client auth.** The access token lives in a plain JavaScript variable — never
 in `localStorage`, which any script on the origin can read. A hard reload
@@ -269,17 +276,60 @@ prints every produced decision and action item next to a hand-written
 reference, with owner and deadline checks. The mock gets 73% of action items
 fully correct; that is the floor a real model has to beat.
 
-## Demo workspace hygiene
+## Meeting history
 
-Every reviewer signs into the same demo account, so their teams and meetings
-would otherwise pile up in each other's way. The server sweeps anything the
-demo account created more than `DEMO_DATA_TTL_HOURS` (6) ago, every
-`DEMO_CLEANUP_INTERVAL_MIN` (30) minutes. The **seeded team and its seeded past
-meetings are never removed**, and neither is anything recent — which is what makes the sweep safe to run
-while people are using the product, unlike a reset button that any reviewer
-could press mid-call.
+`/app/meetings` lists every meeting in your teams, filtered as **All /
+Upcoming / Live / Past** (upcoming soonest first, past most recently ended
+first). Each past meeting shows the start of its summary and what it produced
+("2 decisions · 4 action items, 3 open").
 
-To clear it immediately before a demo:
+**Search looks inside meetings, not just at titles.** A query runs against the
+three MongoDB text indexes — meeting titles and descriptions, AI summaries and
+decisions, and transcripts — scoped to the teams you belong to, and the
+results are merged by relevance (a title match counts most, a passing mention
+in an hour of transcript least). Each result quotes the sentence that matched
+with the words highlighted; a transcript match carries its timestamp and links
+straight to that line, with the recording ready to play from there.
+
+**The meeting page** has tabs for the summary and decisions, the action items,
+the transcript (searchable; every timestamp plays the recording from that
+moment), the chat log and the recording. The **host can correct the AI**: the
+summary, the decisions, and each action item's text, owner, due date and done
+state. Corrected output is marked "Edited by … on …".
+
+**Export** is done in the browser, from what the page already shows: **Copy
+summary** (plain text for chat), **Markdown** (a task list plus a timestamped
+transcript) and **PDF** (`@react-pdf/renderer`, loaded only when first used).
+The PDF uses the built-in Helvetica, so it covers Western European text; the
+Markdown export keeps every character.
+
+## Demo mode: a guest per sign-in
+
+**Try Live Demo** (`POST /api/auth/demo`) creates a **new guest account** each
+time: a generated name ("Amber Otter"), no password, and membership of the
+seeded demo team, so the sample meetings are there straight away. Two windows
+(use a private one, or another browser) are two different people: each is
+host of its own meetings only, and the AI assigns their action items to them
+by name. Guests are plain team members — they cannot remove the seeded
+team-mates or edit the sample meetings, whose host is the seeded Demo User.
+
+Guests clean up after themselves:
+
+- **Automatically.** Every `DEMO_CLEANUP_INTERVAL_MIN` (30) minutes the server
+  removes guests idle for more than `DEMO_DATA_TTL_HOURS` (6) — no sign-in or
+  token refresh in that time — together with the meetings they hosted and the
+  teams they created, and sweeps other demo content older than the TTL. The
+  **seeded team and its sample meetings are never removed**, and neither is
+  anything recent, which is what makes the sweep safe while people are using
+  the product.
+- **On request.** The account menu's **End demo session** (`DELETE
+  /api/auth/demo`) deletes the guest and what it hosted immediately.
+- **At a ceiling.** At most `DEMO_MAX_GUESTS` (200) guests exist at once; the
+  endpoint is public and creates accounts, so beyond that it answers 503 until
+  the sweep has made room.
+
+To clear everything but the seed immediately before a demo (this also removes
+any guest still signed in):
 
 ```bash
 npm run demo:cleanup -w @intellmeet/server -- 0
@@ -296,7 +346,8 @@ as a SHA-256 hash, rotated on every refresh, and lives in an httpOnly,
 Every sign-in starts a **token family**, and each rotation inherits it.
 Presenting a token that has already been rotated is treated as theft and
 revokes **that family only** — not the account's other sessions, which matters
-because the demo account is shared by every reviewer. A replay within
+for anyone signed in on several devices, and for the seeded team-mate
+accounts several reviewers may sign in as at once. A replay within
 `REFRESH_REUSE_GRACE_MS` (10s) while the family is still live is treated as a
 concurrent refresh instead: two browser tabs are separate JavaScript contexts
 and will race, so without the window a second tab would look exactly like an
@@ -369,7 +420,7 @@ npm run prepare   # points git at .husky/
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
 Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
-Phase 6 recording + AI ✅ · Phase 7 history · Phase 8 Kanban · Phase 9 analytics ·
+Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban · Phase 9 analytics ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.
 

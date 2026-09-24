@@ -3,6 +3,8 @@ import { env } from '../../config/env.js';
 import { AppError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import { burnPasswordComparison, hashPassword, verifyPassword } from '../../lib/password.js';
+import { removeGuests } from '../demo/demo.cleanup.js';
+import { createDemoGuest } from '../demo/demo.guests.js';
 import { User, type UserDocument } from '../users/user.model.js';
 import { toPublicUser } from '../users/user.service.js';
 import {
@@ -34,9 +36,13 @@ export interface AuthResult {
  *
  * `$sort` + `$slice: -N` is what caps the array. Sorting ascending by
  * `createdAt` and keeping the last N leaves the N most recent sessions, so a
- * heavily shared account - the demo user, signed into by every reviewer -
- * cannot grow an unbounded document. Expired entries are pulled first so the
- * cap is spent on live sessions rather than on dead ones.
+ * heavily shared account - a seeded team-mate that every reviewer signs in as
+ * for the second seat in a call - cannot grow an unbounded document. Expired
+ * entries are pulled first so the cap is spent on live sessions rather than on
+ * dead ones.
+ *
+ * The `createdAt` stamp doubles as "last active": the demo cleanup removes a
+ * guest whose newest token is older than its cutoff.
  */
 function pushTokenOps(userId: unknown, refresh: IssuedRefreshToken, context: SessionContext) {
   return [
@@ -140,23 +146,40 @@ export async function login(input: LoginInput, context: SessionContext): Promise
 }
 
 /**
- * Logs in as the shared demo account.
+ * Starts a demo session as a brand-new guest.
  *
- * Exists so reviewers can use the product without creating an account. It is
- * safe to leave unauthenticated because it grants access to exactly one
- * pre-seeded user and nothing else; if that user has not been seeded, the
- * endpoint reports the feature as unavailable rather than 404-ing confusingly.
+ * Exists so reviewers can use the product without creating an account. Every
+ * call is a different person - a generated name, a member of the seeded demo
+ * team - so two reviewers (or two windows) can meet each other, and neither is
+ * the host of the other's meetings. It is safe to leave unauthenticated
+ * because a guest can reach the demo team and nothing else, and the number of
+ * guests is capped. If the demo team has not been seeded, the endpoint reports
+ * the feature as unavailable rather than 404-ing confusingly.
  */
 export async function demoLogin(context: SessionContext): Promise<AuthResult> {
-  const user = await User.findOne({ email: env.DEMO_EMAIL.toLowerCase() });
+  return startSession(await createDemoGuest(), context);
+}
 
-  if (!user) {
-    throw AppError.unavailable(
-      'Demo mode is not available: the demo account has not been seeded. Run `npm run seed -w @intellmeet/server`.',
-    );
+/**
+ * Ends a guest's demo session for good: the guest account is deleted, with
+ * the meetings it hosted and the teams it created.
+ *
+ * A guest has no password, so after signing out nobody can ever act as it
+ * again; this lets a reviewer leave nothing behind instead of waiting for the
+ * sweep. Refused for real accounts - deleting those is a different feature
+ * with its own confirmation and data-export obligations. Idempotent: an
+ * account that is already gone is not an error.
+ */
+export async function endDemoSession(userId: string): Promise<void> {
+  const user = await User.findById(userId).select('authProvider');
+  if (!user) return;
+
+  if (user.authProvider !== 'guest') {
+    throw AppError.forbidden('Only a demo guest session can be ended this way. Sign out instead.');
   }
 
-  return startSession(user, context);
+  const removed = await removeGuests([user._id]);
+  logger.info({ userId, ...removed }, '[demo] guest ended their session');
 }
 
 /**
@@ -171,8 +194,8 @@ export async function demoLogin(context: SessionContext): Promise<AuthResult> {
  *
  * 1. **Only the token's family is revoked**, never the whole account. A family
  *    is one sign-in plus all of its rotations, so a compromised session cannot
- *    sign out the account's other devices - or, for the shared demo account,
- *    every other reviewer signed in at the same moment.
+ *    sign out the account's other devices - or, for a seeded team-mate that
+ *    several reviewers sign in as, everyone else using it at that moment.
  *
  * 2. **A short grace window** (`REFRESH_REUSE_GRACE_MS`) treats a replay as a
  *    concurrent refresh rather than theft, provided the family still has a
@@ -286,8 +309,8 @@ function buildAuthResult(user: UserDocument, refresh: IssuedRefreshToken): AuthR
  *
  * This is the blast radius of reuse detection. Scoping it to the family rather
  * than the account follows the OAuth 2.0 Security BCP, which revokes the
- * tokens issued for the affected *grant*, and is what keeps one reviewer's
- * mishap off every other reviewer's session on the shared demo account.
+ * tokens issued for the affected *grant*, and is what keeps one device's
+ * mishap off every other session the same account has open.
  */
 export async function revokeFamily(userId: string, familyId: string): Promise<void> {
   await User.updateOne({ _id: userId }, { $pull: { refreshTokens: { familyId } } } as never);

@@ -30,8 +30,11 @@ describe('<LandingPage />', () => {
     expect(screen.getAllByRole('button', { name: /try live demo/i })).toHaveLength(2);
   });
 
-  it('signs in as the demo account when the demo button is pressed', async () => {
-    const fetchMock = vi.fn(async () => Response.json(authPayload()));
+  it('signs in as a new demo guest when the demo button is pressed', async () => {
+    const guest = authPayload({
+      user: { ...authPayload().user, name: 'Amber Otter', authProvider: 'guest' },
+    });
+    const fetchMock = vi.fn(async () => Response.json(guest, { status: 201 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const { user } = renderWithProviders(<LandingPage />);
@@ -41,10 +44,20 @@ describe('<LandingPage />', () => {
     await user.click(demoButton);
 
     await waitFor(() => expect(useAuthStore.getState().status).toBe('authenticated'));
+    expect(useAuthStore.getState().user?.name).toBe('Amber Otter');
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/auth/demo',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  it('tells reviewers that each demo sign-in is a different person', () => {
+    renderWithProviders(<LandingPage />);
+
+    // The promise the demo login now keeps: two windows are two people, so a
+    // second reviewer is not the host of the first one's meeting.
+    expect(screen.getByText(/your own guest name/i)).toBeInTheDocument();
+    expect(screen.getByText(/every press of try live demo is a different guest/i)).toBeVisible();
   });
 
   it('gives a keyboard user a way past the header', () => {

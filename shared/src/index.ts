@@ -14,6 +14,7 @@ export * from './meeting.js';
 export * from './message.js';
 export * from './notification.js';
 export * from './rtc.js';
+export * from './search.js';
 export * from './socketEvents.js';
 export * from './team.js';
 export * from './upload.js';

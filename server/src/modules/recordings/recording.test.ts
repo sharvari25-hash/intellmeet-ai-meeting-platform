@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, rm } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { meetingIntelligenceSchema, recordingUploadTargetSchema } from '@intellmeet/shared';
@@ -150,6 +150,20 @@ describe('PUT /api/meetings/:id/recording/file', () => {
 
     expect(response.headers['content-type']).toContain('audio/webm');
     expect(Buffer.from(response.body as Buffer).toString()).toBe('OggS');
+  });
+
+  it('answers 404, not 500, when the stored file has gone', async () => {
+    const { host, meetingId } = await liveMeeting();
+    await upload(host, meetingId).expect(202);
+    // What a Render redeploy does to local storage.
+    await rm(recordingsDir(), { recursive: true, force: true });
+
+    const response = await request(app)
+      .get(`/api/meetings/${meetingId}/recording/audio`)
+      .set('Authorization', bearer(host))
+      .expect(404);
+
+    expect(response.body.error.message).toMatch(/no longer available/);
   });
 
   it('refuses a second upload while the first is still being processed', async () => {

@@ -7,12 +7,14 @@ import {
   recordingFileQuerySchema,
   roomCodeParamsSchema,
   saveRecordingSchema,
+  updateInsightSchema,
   updateMeetingSchema,
 } from '@intellmeet/shared';
 import { env } from '../../config/env.js';
 import { writeLimiter } from '../../middleware/rateLimit.js';
 import { requireAuth } from '../../middleware/requireAuth.js';
 import { validate } from '../../middleware/validate.js';
+import * as ai from '../ai/ai.controller.js';
 import * as recordings from '../recordings/recording.controller.js';
 import { isAcceptedRecordingType } from '../recordings/recording.service.js';
 import * as controller from './meeting.controller.js';
@@ -92,10 +94,14 @@ meetingRouter.put(
 meetingRouter.get('/:id/recording/audio', validate({ params: idParamsSchema }), recordings.audio);
 
 /** Status, transcript and insight in one response. */
-meetingRouter.get(
-  '/:id/intelligence',
-  validate({ params: idParamsSchema }),
-  recordings.intelligence,
+meetingRouter.get('/:id/intelligence', validate({ params: idParamsSchema }), ai.intelligence);
+
+/** The host corrects the summary, decisions or action items (Phase 7). */
+meetingRouter.patch(
+  '/:id/insight',
+  writeLimiter,
+  validate({ params: idParamsSchema, body: updateInsightSchema }),
+  ai.updateInsight,
 );
 
 meetingRouter.post(

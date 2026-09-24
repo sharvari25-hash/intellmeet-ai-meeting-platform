@@ -6,24 +6,51 @@ import {
   type CreateMeetingInput,
   type Meeting,
   type MeetingList,
+  type MeetingStatus,
   type MessageHistory,
 } from '@intellmeet/shared';
 import { api } from '@/lib/apiClient';
 
 const meetingResponseSchema = z.object({ meeting: meetingSchema });
 
+/** What the meeting history can be narrowed by. Every field is optional. */
+export interface MeetingListParams {
+  teamId?: string;
+  status?: MeetingStatus;
+  q?: string;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Query keys. Every list key is `['meetings', {params}]` - an object in second
+ * place - which is how `useAiStatusUpdates` recognises a list to refresh when
+ * a summary finishes.
+ */
 export const meetingKeys = {
   all: ['meetings'] as const,
   list: (teamId?: string) => ['meetings', { teamId: teamId ?? null }] as const,
+  history: (params: MeetingListParams) =>
+    [
+      'meetings',
+      {
+        teamId: params.teamId ?? null,
+        status: params.status ?? null,
+        q: params.q ?? '',
+        page: params.page ?? 1,
+        view: 'history',
+      },
+    ] as const,
   byCode: (roomCode: string) => ['meetings', 'code', roomCode] as const,
   detail: (meetingId: string) => ['meetings', 'detail', meetingId] as const,
 };
 
-export function listMeetings(
-  params: { teamId?: string; limit?: number } = {},
-): Promise<MeetingList> {
+export function listMeetings(params: MeetingListParams = {}): Promise<MeetingList> {
   const search = new URLSearchParams();
   if (params.teamId) search.set('teamId', params.teamId);
+  if (params.status) search.set('status', params.status);
+  if (params.q?.trim()) search.set('q', params.q.trim());
+  if (params.page && params.page > 1) search.set('page', String(params.page));
   if (params.limit) search.set('limit', String(params.limit));
 
   const query = search.toString();
@@ -59,15 +86,22 @@ export function endMeeting(meetingId: string): Promise<Meeting> {
 
 export const messageKeys = {
   history: (meetingId: string) => ['meetings', meetingId, 'messages'] as const,
+  /**
+   * The meeting page's paged chat log. A key of its own: it is an infinite
+   * query, whose cached shape differs from the room's single page.
+   */
+  log: (meetingId: string) => ['meetings', meetingId, 'messages', 'log'] as const,
 };
 
 /**
- * The chat that happened before we arrived.
+ * A page of chat, newest page first.
  *
- * Only the most recent page: somebody joining a meeting in progress wants the
- * last few exchanges for context, not an hour of scrollback, and the cursor is
- * there if they do.
+ * Without `before` it is the most recent page: somebody joining a meeting in
+ * progress wants the last few exchanges for context, not an hour of
+ * scrollback. The meeting page passes `before` to read further back.
  */
-export function getMessageHistory(meetingId: string): Promise<MessageHistory> {
-  return api(`/meetings/${meetingId}/messages?limit=50`, messageHistorySchema);
+export function getMessageHistory(meetingId: string, before?: string): Promise<MessageHistory> {
+  const search = new URLSearchParams({ limit: '50' });
+  if (before) search.set('before', before);
+  return api(`/meetings/${meetingId}/messages?${search.toString()}`, messageHistorySchema);
 }

@@ -241,6 +241,10 @@ export async function processMeeting(
         keyDecisions: analysis.keyDecisions,
         actionItems,
         provider: analysis.provider,
+        // New AI output replaces any corrections, so it is no longer "edited".
+        editedAt: null,
+        editedBy: null,
+        editedByName: null,
       },
     },
     { upsert: true },

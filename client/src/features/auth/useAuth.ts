@@ -40,24 +40,43 @@ export function useDemoLogin(): UseMutationResult<AuthResponse, Error, void> {
   return useMutation({ mutationFn: () => authApi.demoLogin(), onSuccess: onSignedIn });
 }
 
-export function useLogout(): UseMutationResult<void, Error, void> {
+/** Everything a signed-in tab holds, dropped, and the visitor sent home. */
+function useOnSignedOut(): () => void {
   const clearSession = useAuthStore((state) => state.clearSession);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+
+  return () => {
+    clearSession();
+    // Through the store rather than the socket module: this hook is imported
+    // by the sign-in pages, and reaching for the library here would drag
+    // socket.io-client back into the public bundle.
+    useSocketStore.getState().teardown();
+    queryClient.clear();
+    navigate('/', { replace: true });
+  };
+}
+
+export function useLogout(): UseMutationResult<void, Error, void> {
+  const onSignedOut = useOnSignedOut();
 
   return useMutation({
     mutationFn: () => authApi.logout(),
     // `onSettled`, not `onSuccess`: if the network call fails the user still
     // asked to sign out, and leaving them in a half-signed-in state would be
     // worse than a refresh token that outlives the tab by a few minutes.
-    onSettled: () => {
-      clearSession();
-      // Through the store rather than the socket module: this hook is imported
-      // by the sign-in pages, and reaching for the library here would drag
-      // socket.io-client back into the public bundle.
-      useSocketStore.getState().teardown();
-      queryClient.clear();
-      navigate('/', { replace: true });
-    },
+    onSettled: onSignedOut,
   });
+}
+
+/**
+ * Deletes the signed-in guest and signs out.
+ *
+ * `onSuccess`, unlike logout: if the delete failed the guest and its meetings
+ * still exist, and pretending otherwise would hide that from the person who
+ * asked for them to be gone. The error is shown instead.
+ */
+export function useEndDemoSession(): UseMutationResult<void, Error, void> {
+  const onSignedOut = useOnSignedOut();
+  return useMutation({ mutationFn: () => authApi.endDemoSession(), onSuccess: onSignedOut });
 }

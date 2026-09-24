@@ -14,6 +14,9 @@ import { cleanupDemoData } from '../modules/demo/demo.cleanup.js';
  *   npm run demo:cleanup -w @intellmeet/server          # env default (6h)
  *   npm run demo:cleanup -w @intellmeet/server -- 0     # everything but the seed
  *
+ * With `-- 0` every guest account goes too, including any still signed in,
+ * so run it before a demo rather than during one.
+ *
  * Redis is connected because deleting a meeting also has to evict its cached
  * view; without it the cache layer fails open and a deleted meeting would keep
  * resolving by room code until its 60s TTL expired.
@@ -34,11 +37,14 @@ async function main(): Promise<void> {
   console.log(
     `\nRemoved from the demo workspace (older than ${olderThanHours ?? env.DEMO_DATA_TTL_HOURS}h):`,
   );
+  console.log(`  guest accounts ${result.guests}`);
   console.log(`  meetings       ${result.meetings}`);
   console.log(`  chat messages  ${result.messages}`);
   console.log(`  teams          ${result.teams}`);
   console.log(`  notifications  ${result.notifications}`);
-  console.log('\nThe seeded demo team and its members are never removed.\n');
+  console.log(
+    '\nThe seeded demo team, its seeded members and its sample meetings are never removed.\n',
+  );
 }
 
 main()

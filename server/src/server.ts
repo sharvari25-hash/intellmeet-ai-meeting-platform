@@ -33,8 +33,9 @@ async function bootstrap(): Promise<void> {
   const io = createSocketServer(server);
   attachRedisAdapter(io);
 
-  // Housekeeping for the shared demo account. Age-based and in-process: see
-  // modules/demo/demo.cleanup.ts for why it is not a reset endpoint.
+  // Housekeeping for the demo workspace: idle guest accounts and stale
+  // content. Age-based and in-process: see modules/demo/demo.cleanup.ts for
+  // why it is not a reset endpoint.
   startDemoCleanup();
 
   // The post-meeting AI queue. The worker runs in this process when

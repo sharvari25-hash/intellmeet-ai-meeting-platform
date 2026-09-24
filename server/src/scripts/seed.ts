@@ -17,10 +17,12 @@ import { User } from '../modules/users/user.model.js';
 /**
  * Seeds the demo workspace.
  *
- * `POST /api/auth/demo` signs in as the account created here, so reviewers can
- * use the product without registering. The script is **idempotent**: it
- * upserts by email and team slug, so it is safe to run repeatedly and safe to
- * point at the production database after a deploy.
+ * `POST /api/auth/demo` adds a fresh guest account to the team created here,
+ * so reviewers can use the product without registering and land in a
+ * workspace that already has colleagues and history. "Demo User" is the
+ * seeded persona that owns the team and hosts the sample meetings. The script
+ * is **idempotent**: it upserts by email and team slug, so it is safe to run
+ * repeatedly and safe to point at the production database after a deploy.
  *
  * Phase 6 adds three past meetings with transcripts and AI insights (from
  * `server/fixtures/`). Tasks follow in Phase 8, when that model exists.
@@ -113,8 +115,9 @@ async function seed(): Promise<void> {
   );
 
   // Printed rather than logged so it is readable even with LOG_LEVEL=silent.
-  console.log(`\nDemo login:  ${demoEmail} / ${DEMO_PASSWORD}`);
-  console.log(`Or call:     POST /api/auth/demo  (no credentials needed)`);
+  console.log(`\nTry Live Demo: POST /api/auth/demo creates a guest in this team`);
+  console.log(`Team-mates:    ${DEMO_TEAMMATES.map((mate) => mate.email).join(', ')}`);
+  console.log(`Password:      ${DEMO_PASSWORD} (also ${demoEmail}, the sample host)`);
   console.log(`Team:        ${team.name} (${team.slug}), ${team.members.length} members`);
   console.log(
     `Meetings:    ${meetings.created} created, ${meetings.updated} refreshed (sample history with AI summaries)\n`,

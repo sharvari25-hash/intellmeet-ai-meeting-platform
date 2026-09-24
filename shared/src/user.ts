@@ -11,11 +11,19 @@ export const userRoleSchema = z.enum(USER_ROLES);
 export type UserRole = z.infer<typeof userRoleSchema>;
 
 /**
- * How the account authenticates. `demo` marks the shared read-only-ish demo
- * account so destructive operations can refuse to run against it.
+ * How the account authenticates.
+ *
+ * - `local`: email and password.
+ * - `demo`: the seeded "Demo User" persona that hosts the sample meetings.
+ *   Nobody is signed in as it by "Try Live Demo" any more.
+ * - `guest`: a temporary account that "Try Live Demo" creates for each
+ *   sign-in, so two reviewers are two different people. It has no password,
+ *   so it cannot be signed back into once its session ends, and the demo
+ *   cleanup removes it after a few hours of inactivity.
+ *
  * A `google` value is added if OAuth2 is implemented later.
  */
-export const AUTH_PROVIDERS = ['local', 'demo'] as const;
+export const AUTH_PROVIDERS = ['local', 'demo', 'guest'] as const;
 export const authProviderSchema = z.enum(AUTH_PROVIDERS);
 export type AuthProvider = z.infer<typeof authProviderSchema>;
 
