@@ -360,7 +360,7 @@ instances running it at once waste a little effort rather than doing harm.
 
 | Cadence | Job |
 | --- | --- |
-| 30 s after start, then every 5 min | End live meetings everybody has left; put the demo board's sample tasks back once the board has been quiet |
+| 30 s after start, then every 5 min | End live meetings everybody has left; once a week, move the seeded history forward (see Analytics); put the demo board's sample tasks back once the board has been quiet |
 | 1 min after start, then every `DEMO_CLEANUP_INTERVAL_MIN` (30) | Demo cleanup: idle guests with what they made, stale demo content |
 
 ### Ending meetings everybody has left
@@ -429,6 +429,7 @@ session").
 | Register + sign-in | IP | 30 / 15 min | Each hashes a password (bcrypt, ~350 ms CPU); unchanged |
 | Failed sign-in | IP + email | 5 / 15 min | Now counts **failures only**: a correct password is not a guess |
 | Board edits | account | 120 / min | Dragging cards is bursty; per account, so a room does not share it |
+| Analytics reads | account | 120 / min | A range nobody has asked for is a cache miss that runs the aggregations; this bounds how many one person can start |
 
 **Why refresh is not keyed on the session.** The refresh token rotates on
 every call, so it is a different key each time. The only stable session key,
@@ -551,3 +552,137 @@ stored but the text, so a message reads the same everywhere. One parser
 highlights. Only team members can be mentioned; mentioning yourself notifies
 nobody. Chat mentions link to the meeting's chat log, comment mentions and
 assignments to the task on its board.
+
+---
+
+## Analytics (Phase 9)
+
+`/api/analytics/{overview,weekly,members,export}` answer for **one team and
+a range of calendar days in a time zone** (`teamId`, `from`, `to`, `tz`). The
+dashboard sends the reader's own zone, so "the week of 14 Sep" is the same
+seven days on the chart, in the table and in the CSV.
+
+```mermaid
+sequenceDiagram
+    participant C as Dashboard
+    participant API as /api/analytics/*
+    participant R as Redis
+    participant DB as MongoDB
+
+    C->>API: teamId, from, to, tz
+    API->>DB: Team.findOne({ _id, members.userId: caller })
+    Note over API: not a member: 404, before any cache
+    API->>R: GET analytics:gen:<team>
+    API->>R: GET analytics:<kind>:<team>:g<gen>:<from>:<to>:<tz>:<today>
+    alt cached
+        R-->>API: numbers
+    else miss
+        API->>DB: aggregation pipelines
+        API->>R: SET ... EX 300
+    end
+    API->>DB: names of the people in the answer (members only)
+    API-->>C: numbers + names
+```
+
+### What is counted
+
+| | Rule | Why |
+| --- | --- | --- |
+| Meeting | ended, `startedAt` in the range, at least one participant | A meeting nobody joined (started by mistake, then ended by the idle sweep) did not happen |
+| Week | `$dateTrunc` to Monday in `tz`, formatted `YYYY-MM-DD` | The same day boundaries the reader sees; empty weeks are filled in by the server |
+| Participants | distinct `participants.userId` per meeting | A reconnect reopens a row, but duplicates must still count once |
+| Time in meetings | each attendance row, join to leave, clipped to the meeting | Someone waiting in the lobby before the start, or never seen leaving, is not over-counted |
+| Action item done | ticked off, **or** its task is in a column flagged done | The board is where most items are finished; "done" is a flag, not a column name |
+| Action items per week | by the week of the meeting that raised them | "Of what was agreed that week, how much is done now", a cohort; tasks have no completion date to count by |
+| Task | created in the range, any of the team's boards; done by the column flag | Same cohort idea; a member's rate is done / assigned |
+| Most active | meetings attended + action items owned + tasks completed | Three things the stacked bar shows, so the ranking can be read off the chart |
+
+Every metric is a MongoDB aggregation over one team (`$lookup` from meetings
+to insights to tasks for action items, a `$facet` for attendance, hosting and
+chat in one pass). Nothing in them knows about seeded data. New indexes serve
+them: `{teamId, status, startedAt}` on meetings and `{teamId, createdAt}` on
+tasks.
+
+### Caching: a generation per team
+
+Each answer is cached for five minutes, as the plan asks, and **dropped early
+without finding its keys**: every key contains the team's generation counter
+(`analytics:gen:<team>`), and a write that changes the team's numbers
+increments it. The next read misses and recomputes; the old entries are never
+read again and expire on their own. One `INCR` per write, no key scans, and no
+list of ranges and time zones to invalidate.
+
+Writes that bump it: every task write (through `touchBoards`, which already
+marks the board for the demo reset), a meeting ending (host, socket or idle
+sweep) or being deleted, the AI pipeline saving an insight, the host editing
+action items, a column's done flag changing, a board deleted, the demo cleanup
+and the seed. Anything missed is at most five minutes stale.
+
+Only numbers are cached. Names and "still in the team" are looked up per
+request, like `isHost` on a cached meeting, so a rename or a departure shows
+at once. Authorisation is never cached. Every call fails open: with Redis
+down, analytics are recomputed on every request.
+
+### The seeded history
+
+The demo team needs weeks of data for the charts to mean anything. It is
+**real meetings**, not analytics-only numbers kept elsewhere: 22 short
+meetings over the eight weeks before the three detailed samples
+(`server/src/modules/demo/demo.history.data.ts`), each with a summary,
+decisions, owned action items, attendance and a short transcript generated
+from those items, and 13 finished tasks in the demo board's Done column.
+
+```
+seed (or the weekly sweep) at `now`
+  anchor = Monday 00:00 UTC of now's week
+  history meeting = anchor - 7 x weeksAgo + weekday + time      (whole weeks)
+  task createdAt  = its meeting's end + 30 min
+  sample tasks    = created N days before now, due M days after
+```
+
+- **Why real meetings.** The dashboard is computed by the same pipelines as
+  any team's, from the documents the history page lists, so the two always
+  agree, and a judge who finishes a task or ticks off an item sees the chart
+  move. A separate "analytics fixture" would have been faster to write and
+  would have shown 22 meetings on the dashboard beside 3 in the history.
+- **Why short but not empty.** Two sentences, the decisions, the items and a
+  transcript that says the same things read like a real team's minutes; an
+  empty meeting would clutter the history. The words the e2e suite searches
+  the samples for are kept out, and fewer than ten meetings mention a sprint,
+  so those searches still land on page one (a test checks this).
+- **Never deleted.** Everything is `seeded`; the demo cleanup never matches a
+  seeded meeting or task. Re-seeding upserts by `seedKey` with stable action
+  item ids, so a judge's task made from an open history item keeps its link. A
+  meeting or task taken out of the data is removed by the next seed.
+- **Kept recent.** `refreshDemoHistory` runs in the quick sweep: one indexed
+  read tells it whether the history is placed for this week; when the week
+  has changed it re-seeds the samples and the history and, if the board is
+  quiet, re-dates the board's seeded tasks (a busy board is re-dated by its
+  own reset later). It also fills the history in on a database seeded before
+  it existed.
+
+Mongoose treats `createdAt` as immutable and silently drops it from every
+update, so the seeds write it through the driver after the upsert
+(`setCreatedAt`). Without that, a re-seed moved nothing but the first insert.
+
+### The CSV export
+
+Built on the server from the same cached numbers, by `toCsv` in
+`shared/src/csv.ts`. OWASP's formula-injection mitigation: a text cell whose
+first non-blank character is `=`, `+`, `-`, `@` (or a full-width form), or
+that starts with a tab or carriage return, is prefixed with `'`; every text
+cell is quoted with embedded quotes doubled; numbers stay numbers. A UTF-8
+byte order mark and CRLF line ends make Excel read it correctly. The file
+name is built only from the team's slug and the validated dates.
+
+### Charts and accessibility
+
+Recharts, in the analytics page's own lazy chunk (123 kB gzipped). Each chart
+sits in a `ChartCard`: a one-sentence summary under the title, the SVG
+(`aria-hidden`, with Recharts' keyboard layer switched off so nothing hidden
+is focusable), and a table with every number it draws, visually hidden but
+always read by screen readers, which **Show table** puts on screen. Colours:
+the categorical slots were checked for colour-blind separation and contrast
+against the card in both themes; "done/overdue" use status colours with an
+icon and a label; the chart CSS variables are stepped separately for dark
+mode. Animation is off under `prefers-reduced-motion`.

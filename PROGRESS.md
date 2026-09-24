@@ -5,6 +5,218 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 9 — Analytics & Insights ✅
+
+**Completed:** 2026-09-24
+
+### Before Phase 9: the two questions from the Phase 8 checkpoint
+
+- **Defaults kept** (demo sign-ins 60 and refreshes 600 per IP per 15 min;
+  live meetings end after 10 idle minutes; the demo board resets after 60
+  quiet minutes). They were already in `server/.env.example`; that block now
+  has a "Demo-day tuning" header, and the README has a table of every
+  variable worth changing on Render, with its default and what it controls.
+- **Guests keep turning the sample meetings' action items into tasks**, and
+  an item is still freed when that guest leaves. Unchanged, and it now works
+  on the history meetings' open items too (tested: the link survives a
+  re-seed).
+
+### Built
+
+- **Four endpoints**, `GET /api/analytics/{overview,weekly,members,export}`,
+  each for one team and a range of calendar days in a time zone (`teamId`,
+  `from`, `to`, `tz`; defaults: the last 8 weeks, UTC). Every one checks team
+  membership before anything else, cached or not, and answers "not found" to
+  anyone outside the team.
+  - **overview:** meetings, total and average minutes, people per meeting;
+    action items raised, done, open, overdue; tasks created and completed.
+  - **weekly:** per Monday-based week (in `tz`, empty weeks included):
+    meetings, minutes, average length and attendance, items raised and done.
+  - **members:** per person: meetings attended and hosted, time actually in
+    meetings (join to leave), chat messages, items owned and done, tasks
+    assigned and completed, completion rate, and an activity score.
+  - **export:** the weekly or members table as CSV.
+- **MongoDB aggregation pipelines** (`$dateTrunc` with the time zone,
+  `$lookup` meetings → insights → tasks, a `$facet` for attendance, hosting
+  and chat in one pass), **cached in Redis for 5 minutes**, dropped early by a
+  per-team generation counter that task and meeting writes bump.
+- **The dashboard** (`/app/analytics`): a filter row (team, 4 / 8 / 12
+  weeks, any dates, Export CSV), five KPI tiles and five Recharts charts: a
+  line (meetings per week), stacked columns (action items raised vs done per
+  week), a donut (done / open / overdue), bars (task completion per member)
+  and stacked bars (most active members). All filters live in the URL.
+- **Accessibility built into every chart:** a one-sentence summary under the
+  title (what a sighted reader takes from it: total, peak, trend), a table
+  with every number (always available to screen readers, and on screen with
+  **Show table**), the SVG hidden from assistive technology with Recharts'
+  focusable layer switched off, colours checked for colour-blind separation
+  and contrast in both themes, status colours only with an icon and a word,
+  no animation under reduced motion.
+- **CSV export safe against formula injection**, built on the server.
+- **Eight weeks of seeded history** for the demo team (below), kept recent by
+  the housekeeping sweep.
+
+### The seeded history: real meetings, short but never empty
+
+The demo team had three sample meetings, one chart point each. Options:
+
+| Option | Verdict |
+| --- | --- |
+| Analytics-only numbers in a collection of their own, merged into the answers | Rejected. The dashboard would say "25 meetings" and the history page would list 3; the pipelines would need a seeded-data branch; ticking an item off would not move a chart. |
+| Many empty meetings (a title and a duration) | Rejected. They would clutter the history with rows that open to nothing. |
+| **Real meetings, marked `seeded`, each with short minutes** | **Chosen.** |
+
+- **22 meetings over the 8 weeks before the samples**
+  (`demo.history.data.ts`): weekly product syncs, sprint plannings and retros,
+  design critiques, a security review, an incident review, two customer
+  debriefs. Hosts, attendance (2-4 people) and lengths (18-70 min) vary; one
+  week is a holiday with one meeting, two weeks have four. Each has a
+  two-sentence summary, its decisions, owned action items with due dates,
+  and a short transcript generated from those items ("I'll ... by Friday"),
+  so the minutes, the transcript and the search all agree.
+- **48 action items**: 27 ticked off, 13 finished as tasks, 8 still open
+  (older weeks all done, recent ones mostly open, some overdue). **The 13
+  tasks** sit in the
+  demo board's Done column, linked both ways. The column scrolls inside
+  itself, so the board page does not grow.
+- **Dates relative to the seed run**: placed from the Monday of the week the
+  seed runs in (whole weeks, so a Tuesday sync stays a Tuesday); tasks dated
+  just after their meetings; the six sample tasks now have relative creation
+  dates as well as due dates.
+- **Kept recent**: once a week the quick sweep sees the history is placed for
+  a past week and re-seeds the samples and the history, and re-dates the
+  board's seeded tasks if the board is quiet (otherwise its own reset does it
+  later). It also fills the history in on a database seeded before Phase 9,
+  so a deploy does not need a manual seed.
+- **Never deleted, idempotent**: everything is `seeded` (the demo cleanup
+  never matches it, tested at `-- 0`); re-seeding upserts by `seedKey` with
+  stable action-item ids, so judges' tasks keep their links; a meeting or
+  task taken out of the data is removed by the next seed.
+- **The e2e searches still land on page one**: the words they search the
+  samples for are kept out of the history, and fewer than ten meetings
+  mention "sprint" (a unit test checks both).
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Calendar days + an IANA time zone, not instants** | "The week of 14 Sep" must be the same seven days on the chart, the table and the CSV for someone in Kolkata. The server turns days into instants (`zonedDayStart`, two-pass for daylight saving) and Mongo buckets in the same zone. Plain dates also make the API easy to call by hand. |
+| **One team per request, required** | Every request names the one team it is checked against; the default is the team the reader has been in longest, which for a guest is the demo team rather than one it made a minute ago. A cross-team roll-up is a later feature. |
+| **Four endpoints, one membership check each** | They map onto the plan's metrics, load in parallel, cache separately, and every one of them is covered by the "not a member → 404" test. |
+| **A meeting counts once ended, with somebody in it** | A meeting nobody joined (started by mistake, ended by the idle sweep) did not happen; a live one has no length yet. |
+| **Items by the week they were raised; tasks by when they were created** | "Of what was agreed that week, how much is done now": a cohort view, which needs no completion timestamp (tasks have none). The consequence is that recent weeks look less complete, which is true. |
+| **"Done" is the column's flag, or ticked off** | Most items are finished on the board. Renaming a column changes nothing; unflagging "Done" changes the numbers (tested). |
+| **Generation counter instead of deleting keys** | A write increments `analytics:gen:<team>`, which is in every key; old entries are never read again and expire. No key scans, nothing to enumerate. The hooks: `touchBoards` (every task write already passes through it), meeting end (host, socket, idle sweep) and delete, AI insight saved, action items edited, done-flag changes, board delete, demo cleanup, seed. Anything missed is at most 5 minutes stale. |
+| **Only numbers are cached; names and membership are looked up per request** | Found by the e2e run (bug 2). Same pattern as `isHost` on the cached meeting view. |
+| **Per-account rate limit on analytics (120/min)** | A new range is a cache miss that runs the pipelines; this bounds how many one person can start. |
+| **CSV built on the server, one shared escaper** | Testable end to end, the same numbers as the screen, and the escaping lives in one pure function (`shared/src/csv.ts`). OWASP: `'` before any text cell whose first non-blank character is `= + - @` (or full-width), or that starts with tab/CR; all text quoted; numbers left as numbers so `-3` stays a number. BOM + CRLF for Excel. The file name uses only the slug and the dates. |
+| **Chart hidden, table always present** | An SVG of unlabelled shapes is noise to a screen reader; the table is the equivalent. Recharts 3 makes the chart focusable by default, which would put focusable content inside `aria-hidden`; it is switched off, and keyboard users get the table. |
+| **Emphasis for "raised vs done"** | Done in colour on top of "not done yet" in grey: the part-to-whole reads at a glance, and the total bar is "raised". |
+| **Straight lines, 0% bars labelled** | A smoothed curve implies values between weekly points that never happened; a zero-width bar got no label, so it has a sliver. |
+| **Recharts in its own lazy chunk** | 425 kB (123 kB gzipped); nobody downloads it before opening Analytics. Pre-bundled in dev, like dnd-kit, to avoid the mid-navigation reload Phase 8 found. |
+| **`react-is@19` declared at the root and in the client** | Recharts needs a `react-is` matching React 19. See bug 3. |
+
+### Bugs found while building
+
+1. **Re-seeding never moved a seeded document's `createdAt`**, found by the
+   "moves forward by whole weeks" test. Mongoose treats timestamp
+   `createdAt` as immutable and silently drops it from updates; its
+   `overwriteImmutable` option did not change that for `findOneAndUpdate`
+   (checked in a scratch database with three variants). Latent since Phase
+   6: the sample meetings kept their first seed's `createdAt`, which the
+   history's "All" filter sorts by. It would have frozen the seeded tasks out
+   of the analytics range. The seeds now write it through the driver.
+2. **A renamed member kept their old name in the export for up to 5
+   minutes**, found by the e2e run: names were cached with the numbers. Now
+   only numbers are cached (above); a server test covers a rename and a
+   departure on a cached answer.
+3. **Recharts resolved React 17's `react-is`**, hoisted to the root by
+   `pretty-format`; React 19 elements have a different symbol, so Recharts
+   would misread its own children. An override scoped to Recharts was
+   ignored (the hoisted copy already satisfied its peer range), and a global
+   override left npm with a tree where nothing could resolve `react-is` at
+   all. Declaring `react-is@^19` at the root (dev) and in the client puts v19
+   in the root slot; `pretty-format` and `prop-types` keep their own nested
+   copies (checked with `require.resolve` from each).
+4. **Renaming a history key would have left the old seeded meeting forever**
+   (the cleanup never deletes seeded data). The seed now retires history
+   meetings and tasks whose keys are no longer in the data; found while
+   moving a meeting between weeks.
+5. **Literal non-breaking space and BOM characters** in `csv.ts` and two
+   tests, where escape sequences were meant; ESLint's
+   `no-irregular-whitespace` caught them. Now escapes, and the repo was
+   scanned for others.
+
+### Known limitations
+
+- **The history moves forward a week at a time** (Monday 00:00 UTC). Its
+  newest meeting is one to two weeks old, and the pattern is the same eight
+  weeks sliding along.
+- **No "completed per week"**: tasks have no completion date, so completion
+  is measured on the cohort created in the range.
+- **Chat messages count once their meeting has ended**, like the meeting.
+- **One team at a time**; no roll-up across teams.
+- **Keyboard users read values in the table**, not in chart tooltips.
+- **Member charts show the top 8**; the tables list everyone.
+- **Staleness**: a change that feeds the numbers without passing a hooked
+  write is up to 5 minutes late.
+- **Everything real counts**: a judge's own test meetings and tasks appear in
+  the demo team's analytics until the cleanup removes them.
+- A targeted `npx playwright test e2e/analytics.spec.ts` ends with Node's
+  `UV_HANDLE_CLOSING` assertion after the test passes (as in Phase 8); the
+  full `npm run test:e2e` exits 0.
+
+### Manual test script
+
+Prerequisites: `docker compose up -d`, `npm run seed -w @intellmeet/server`
+(it prints "History: 22 created ..."; a running API also does it by itself
+within 30 seconds of starting), `npm run dev`.
+
+1. <http://localhost:5173> → **Try Live Demo** → **Analytics**. Eight weeks,
+   about 23 meetings, five charts, each with a sentence under its title.
+2. **Meetings per week** → **Show table**: eight weeks of numbers. **Show
+   chart** puts it back.
+3. **12 weeks**: the URL says `?weeks=12`, the charts widen to 12 weeks.
+   Change **From** to a date after **To**: an error, and nothing is loaded.
+4. **Tasks** → add a task, assign it to yourself, drag it to **Done** →
+   **Analytics**: "Tasks completed" went up and you are in **Task completion
+   by member** at 100% (no 5-minute wait).
+5. **Meetings** → a history meeting such as *Sprint 12 planning* → summary,
+   decisions, items (some done), a short transcript. Open items offer
+   **Create task**.
+6. **Settings** → rename yourself to `=1+1` → **Analytics** → **Export CSV →
+   Members**: in the file your name is `'=1+1`, shown as text.
+7. Dark theme (the sun/moon button), and a phone-width window (360 px):
+   charts stay inside their cards, nothing scrolls sideways.
+8. The API check below: another team's id answers 404.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **682 passed** (494 server, 188 client) |
+| `npm run test:e2e` | ✅ **8 passed**: analytics (charts, tables, URL period, live update after a task, CSV with a formula-shaped name, 404 for another team, 360 px), plus the seven from Phase 8 |
+| Server coverage | ✅ **94.6% statements**, 85.1% branches (Phase 8: 93.2% / 84.0%); analytics files 97-100% |
+| Horizontal overflow at 360 px | ✅ none on `/app/analytics`, on a fresh load and after resizing from desktop (Playwright, plus the e2e assertion) |
+| `npm run build` | ✅ all 3 workspaces; `AnalyticsPage` is its own chunk (425 kB, 123 kB gzipped); no Recharts in the main bundle |
+| Live API | ✅ overview on the seeded team: 292 ms uncached, 24 ms cached (dev machine) |
+| e2e / test-data cleanup | ✅ database compared before and after every run: same guests, same tasks, comments, messages and notifications; no non-seeded meetings, no `E2E` tasks |
+
+The e2e runs used the running dev servers; the API had reloaded the new code
+(its uptime was shorter than the time since the last server edit).
+
+### Next phase
+
+**Phase 10 — Quality Pass:** coverage stays above target; a Playwright flow
+from demo login through meeting, chat, summary and task; a keyboard-only and
+contrast audit; route-level splitting and bundle analysis (the main bundle is
+197 kB gzipped); Lighthouse scores saved; edge cases (expired token mid-meeting,
+reconnects, host leaving, duplicate tabs, empty states).
+
+---
+
 ## Phase 8 — Team Workspace, Kanban & Tasks ✅
 
 **Completed:** 2026-09-24
