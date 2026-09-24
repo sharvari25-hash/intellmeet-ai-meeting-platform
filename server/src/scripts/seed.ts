@@ -10,6 +10,7 @@ import {
   DEMO_TEAM_NAME,
   DEMO_TEAM_SLUG,
 } from '../modules/demo/demo.constants.js';
+import { seedDemoBoard } from '../modules/demo/demo.board.js';
 import { seedDemoMeetings } from '../modules/demo/demo.meetings.js';
 import { Team } from '../modules/teams/team.model.js';
 import { User } from '../modules/users/user.model.js';
@@ -25,7 +26,8 @@ import { User } from '../modules/users/user.model.js';
  * repeatedly and safe to point at the production database after a deploy.
  *
  * Phase 6 adds three past meetings with transcripts and AI insights (from
- * `server/fixtures/`). Tasks follow in Phase 8, when that model exists.
+ * `server/fixtures/`); Phase 8 the team's board with sample tasks, some made
+ * from those meetings' action items.
  */
 
 async function upsertUser(name: string, email: string, passwordHash: string, isDemo: boolean) {
@@ -102,6 +104,10 @@ async function seed(): Promise<void> {
   }));
   const meetings = await seedDemoMeetings({ teamId: team._id.toString(), people: everyone });
 
+  // The team's board with sample tasks, three of them made from those
+  // meetings' action items. Re-running puts the samples back as seeded.
+  const board = await seedDemoBoard({ teamId: team._id.toString(), people: everyone });
+
   logger.info(
     {
       demoEmail,
@@ -120,8 +126,9 @@ async function seed(): Promise<void> {
   console.log(`Password:      ${DEMO_PASSWORD} (also ${demoEmail}, the sample host)`);
   console.log(`Team:        ${team.name} (${team.slug}), ${team.members.length} members`);
   console.log(
-    `Meetings:    ${meetings.created} created, ${meetings.updated} refreshed (sample history with AI summaries)\n`,
+    `Meetings:    ${meetings.created} created, ${meetings.updated} refreshed (sample history with AI summaries)`,
   );
+  console.log(`Board:       ${board.tasks} sample tasks on the team board, as seeded\n`);
 }
 
 seed()
