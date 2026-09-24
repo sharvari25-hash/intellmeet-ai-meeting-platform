@@ -30,7 +30,12 @@ authRouter.post(
   controller.login,
 );
 
+// Creates a guest per call, so it shares the tighter auth limiter; the guest
+// ceiling (DEMO_MAX_GUESTS) bounds what many addresses together can create.
 authRouter.post('/demo', authLimiter, controller.demoLogin);
+// Ends a guest's demo session and deletes the guest. Bearer-authenticated, and
+// only ever acts on the caller's own account.
+authRouter.delete('/demo', requireAuth, controller.endDemo);
 authRouter.post('/refresh', authLimiter, controller.refresh);
 authRouter.post('/logout', controller.logout);
 

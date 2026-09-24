@@ -35,7 +35,16 @@ export const login: RequestHandler = async (req, res) => {
 };
 
 export const demoLogin: RequestHandler = async (req, res) => {
-  sendAuthResult(res, await authService.demoLogin(sessionContext(req)));
+  // 201: every demo sign-in creates an account.
+  sendAuthResult(res, await authService.demoLogin(sessionContext(req)), 201);
+};
+
+export const endDemo: RequestHandler = async (req, res) => {
+  await authService.endDemoSession(currentUser(req).id);
+  // The account is gone, so its refresh cookie is worthless; clear it rather
+  // than leave the browser presenting it on the next page load.
+  clearRefreshCookie(res);
+  res.status(204).send();
 };
 
 export const refresh: RequestHandler = async (req, res) => {

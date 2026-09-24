@@ -24,8 +24,7 @@ const refreshTokenSchema = new Schema(
      *
      * One `POST /api/auth/login` (or `/demo`) starts a family; every rotation
      * inherits it. Revocation is scoped to a family, so a compromised session
-     * cannot sign out the account's other devices - or, for the shared demo
-     * account, every other reviewer using it at the same time.
+     * cannot sign out the account's other devices or browser profiles.
      */
     familyId: { type: String, required: true },
 
@@ -71,6 +70,11 @@ const userSchema = new Schema(
 // Finds the session for a presented refresh token in one indexed lookup,
 // rather than loading every user and scanning their token arrays.
 userSchema.index({ 'refreshTokens.hash': 1 });
+
+// Every "Try Live Demo" counts the existing guests against the ceiling, and
+// the demo cleanup looks guests up by provider; neither should scan every
+// account to do it.
+userSchema.index({ authProvider: 1 });
 
 export type UserDocument = HydratedDocument<InferSchemaType<typeof userSchema>>;
 export type RefreshTokenEntry = InferSchemaType<typeof refreshTokenSchema>;

@@ -111,9 +111,10 @@ const envSchema = z.object({
   /**
    * Maximum refresh tokens retained per account, oldest pruned first.
    *
-   * Bounds the document size of heavily shared accounts - above all the demo
-   * user, which every reviewer signs into. Signing in more times than this
-   * silently ends the oldest session.
+   * Bounds the document size of an account that signs in from many devices
+   * or tabs - such as a seeded team-mate every reviewer uses as the second
+   * person in a call. Signing in more times than this silently ends the
+   * oldest session.
    */
   MAX_SESSIONS_PER_USER: z.coerce.number().int().min(1).max(200).default(20),
 
@@ -122,21 +123,36 @@ const envSchema = z.object({
   // cost 12 would add minutes to the suite for no extra assurance.
   BCRYPT_COST: z.coerce.number().int().min(4).max(15).default(12),
 
-  /** Account used by `POST /api/auth/demo` so reviewers can skip signing up. */
+  /**
+   * Email of the seeded "Demo User" persona, which owns the demo team and
+   * hosts the sample meetings. `POST /api/auth/demo` does not sign in as it;
+   * each demo sign-in gets a guest account of its own.
+   */
   DEMO_EMAIL: z.string().default('demo@intellmeet.app'),
 
   /**
-   * How long data created through the shared demo account survives.
+   * How long demo data survives.
    *
-   * Every reviewer signs into the same account, so their teams and meetings
-   * pile up in each other's way. Six hours is long enough that nobody's
-   * session is ever swept out from under them, and short enough that the
+   * Teams and meetings created in the demo workspace older than this are
+   * swept, and so are guest accounts that have not signed in or refreshed
+   * their session for this long (with everything they created). Six hours is
+   * long enough that nobody is swept out mid-demo, and short enough that the
    * workspace is presentable again by the next morning.
    */
   DEMO_DATA_TTL_HOURS: z.coerce.number().min(1).max(720).default(6),
 
   /** How often the cleanup sweep runs, in minutes. */
   DEMO_CLEANUP_INTERVAL_MIN: z.coerce.number().int().min(5).max(1440).default(30),
+
+  /**
+   * Most demo guests that may exist at once.
+   *
+   * "Try Live Demo" is unauthenticated and creates an account, so without a
+   * ceiling a script could fill the database and the demo team. The rate
+   * limiter bounds one IP; this bounds everyone. At the ceiling new demo
+   * sign-ins get a 503 until the sweep has removed inactive guests.
+   */
+  DEMO_MAX_GUESTS: z.coerce.number().int().min(1).max(10_000).default(200),
 
   // --- Cloudinary (optional) ------------------------------------------------
   // The app runs fully without these; only the upload-signature endpoint is
