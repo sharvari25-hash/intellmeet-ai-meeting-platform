@@ -1,6 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { Types } from 'mongoose';
+import { Types, type Collection } from 'mongoose';
 import { z } from 'zod';
 import { transcriptSegmentSchema } from '@intellmeet/shared';
 import { matchAssignee } from '../../lib/ai/assignee.js';
@@ -111,6 +111,20 @@ export function sampleActionItemId(fixtureKey: string, index: number): Types.Obj
   return stableObjectId(`${fixtureKey}:action:${index}`);
 }
 
+/**
+ * Dates a seeded document. Mongoose treats a timestamp's `createdAt` as
+ * immutable and drops it from every update (verified: `overwriteImmutable`
+ * does not change that for `findOneAndUpdate` in 8.24), so a re-seed that
+ * moves a meeting or task in time writes it through the driver.
+ */
+export async function setCreatedAt(
+  collection: Collection,
+  id: Types.ObjectId,
+  createdAt: Date,
+): Promise<void> {
+  await collection.updateOne({ _id: id }, { $set: { createdAt } });
+}
+
 function shiftIsoDate(isoDate: string, days: number): string {
   const date = new Date(`${isoDate}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + days);
@@ -191,13 +205,14 @@ export async function seedDemoMeetings(options: {
           aiStatus: 'done',
           aiError: null,
           seeded: true,
-          // Backdated, so it sorts as history rather than as brand new.
-          createdAt: startedAt,
         },
         $setOnInsert: { roomCode: generateCode(7), seedKey: fixture.key },
       },
       { upsert: true, new: true, timestamps: false },
     );
+    // Backdated, so it sorts as history rather than as brand new - on every
+    // seed, not only the first (which is all a `$set` would manage).
+    await setCreatedAt(Meeting.collection, meeting._id, startedAt);
 
     await Transcript.findOneAndUpdate(
       { meetingId: meeting._id },
