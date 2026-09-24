@@ -238,3 +238,19 @@ export const boardWriteLimiter = createLimiter({
   message: 'You are changing the board very quickly. Please slow down.',
   keyGenerator: (req) => (req.user ? `user:${req.user.id}` : ipBucket(req)),
 });
+
+/**
+ * Analytics reads, per signed-in account: 120 a minute.
+ *
+ * Reads, but not free ones: the answers are cached, and a range nobody has
+ * asked for yet is a miss that runs the aggregations. This bounds how many
+ * one person can start. The dashboard makes three requests per change of
+ * filter, so a person clicking through ranges never meets it.
+ */
+export const analyticsLimiter = createLimiter({
+  prefix: 'analytics',
+  windowMs: 60 * 1000,
+  limit: 120,
+  message: 'Too many analytics requests. Please wait a moment.',
+  keyGenerator: (req) => (req.user ? `user:${req.user.id}` : ipBucket(req)),
+});

@@ -48,6 +48,9 @@ taskSchema.index({ assigneeId: 1, dueDate: 1 });
 // Everything a guest made goes with the guest.
 taskSchema.index({ createdBy: 1 });
 
+// Analytics: a team's tasks created in a range of days, across its boards.
+taskSchema.index({ teamId: 1, createdAt: 1 });
+
 taskSchema.index(
   { sourceMeetingId: 1, sourceActionItemId: 1 },
   { unique: true, partialFilterExpression: { sourceActionItemId: { $type: 'objectId' } } },
