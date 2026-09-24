@@ -27,9 +27,24 @@ export default defineConfig({
     // The in-memory MongoDB is a single shared instance, so run test files
     // sequentially rather than having parallel workers fight over it.
     fileParallelism: false,
+    // Per test (default 5 s). Under coverage on a 2-vCPU CI runner the
+    // database-heavy tests (board moves, analytics) come close to 5 s. A
+    // ceiling, not a delay: a passing test is exactly as fast as before.
+    testTimeout: 15_000,
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html', 'lcov'],
+      // json-summary feeds the coverage table in CI's job summary.
+      reporter: ['text', 'html', 'lcov', 'json-summary'],
+      // `test:coverage` (and so CI) fails below these. The plan's floor is
+      // 50%; the gate sits a few points under what the suite reaches now
+      // (94.6 / 85.1 / 94.6 / 94.6 at Phase 11), so a feature merged without
+      // its tests is caught while normal churn is not.
+      thresholds: {
+        statements: 90,
+        branches: 80,
+        functions: 90,
+        lines: 90,
+      },
       include: ['src/**/*.ts'],
       exclude: [
         'src/**/*.test.ts',

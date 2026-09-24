@@ -65,5 +65,17 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Per test (default 5 s). Some page tests take 3-4 s under coverage on an
+    // idle laptop, so 5 s left no headroom for a CI runner. A ceiling, not a
+    // delay: see asyncUtilTimeout in src/test/setup.ts.
+    testTimeout: 15_000,
+    // `npm run test:coverage -w @intellmeet/client` (CI). Reported, not gated:
+    // the gate is on the server, where the plan sets its coverage target.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'html', 'lcov', 'json-summary'],
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/**/*.d.ts', 'src/main.tsx'],
+    },
   },
 });
