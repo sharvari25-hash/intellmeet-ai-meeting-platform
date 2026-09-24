@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useFieldArray, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -17,9 +18,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/select-native';
 import { FormError } from '@/features/auth/FormError';
+import { taskPath } from '@/features/tasks/tasks.api';
 import { cn } from '@/lib/utils';
 import { formatDue } from '../format';
 import { useUpdateInsight } from '../useUpdateInsight';
+import { CreateTasksDialog } from './CreateTasksDialog';
 import { EditedNote, HostOnlyNote } from './notes';
 
 /** An item as the API takes it back: everything the host can change. */
@@ -42,9 +45,12 @@ export function ActionItemsTab({
   insight: MeetingInsight;
 }) {
   const [editing, setEditing] = useState(false);
+  // The items the "create tasks" dialog is open for; empty when it is closed.
+  const [filing, setFiling] = useState<ActionItem[]>([]);
   const save = useUpdateInsight(meeting.id);
   const items = insight.actionItems;
   const open = items.filter((item) => item.status !== 'done').length;
+  const withoutTasks = items.filter((item) => !item.task);
 
   if (editing) {
     return <ActionItemsForm meeting={meeting} insight={insight} onDone={() => setEditing(false)} />;
@@ -79,12 +85,21 @@ export function ActionItemsTab({
             {open} open of {items.length}
           </span>
         )}
-        {meeting.isHost && (
-          <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setEditing(true)}>
-            <Pencil aria-hidden="true" />
-            Edit action items
-          </Button>
-        )}
+        <div className="ml-auto flex flex-wrap gap-1">
+          {/* Anyone in the team can file the tasks; often not the host's job. */}
+          {withoutTasks.length > 1 && (
+            <Button variant="outline" size="sm" onClick={() => setFiling(withoutTasks)}>
+              <KanbanSquare aria-hidden="true" />
+              Create tasks for all ({withoutTasks.length})
+            </Button>
+          )}
+          {meeting.isHost && (
+            <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+              <Pencil aria-hidden="true" />
+              Edit action items
+            </Button>
+          )}
+        </div>
       </div>
 
       {items.length === 0 ? (
@@ -133,21 +148,34 @@ export function ActionItemsTab({
                   </p>
                 </div>
 
-                {/* The plan's "Create task" belongs to the task board, which
-                    does not exist until Phase 8; shown so the flow is visible,
-                    and explained below rather than silently doing nothing. */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled
-                  aria-label="Create task"
-                  aria-describedby="create-task-note"
-                  className="shrink-0"
-                >
-                  <KanbanSquare aria-hidden="true" />
-                  {/* Icon-only on a phone, where the row has no room for it. */}
-                  <span className="hidden sm:inline">Create task</span>
-                </Button>
+                {item.task ? (
+                  // Where its task is now, read live from the board.
+                  <Button asChild variant="outline" size="sm" className="shrink-0">
+                    <Link
+                      to={taskPath(item.task)}
+                      aria-label={`Open the task for “${item.text}”, in ${item.task.columnTitle}`}
+                    >
+                      {item.task.isDone ? (
+                        <CheckCircle2 aria-hidden="true" className="text-[var(--success)]" />
+                      ) : (
+                        <KanbanSquare aria-hidden="true" />
+                      )}
+                      {/* Icon-only on a phone, where the row has no room for it. */}
+                      <span className="hidden sm:inline">{item.task.columnTitle}</span>
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    aria-label={`Create a task for “${item.text}”`}
+                    onClick={() => setFiling([item])}
+                  >
+                    <KanbanSquare aria-hidden="true" />
+                    <span className="hidden sm:inline">Create task</span>
+                  </Button>
+                )}
               </li>
             );
           })}
@@ -156,11 +184,17 @@ export function ActionItemsTab({
 
       <FormError error={save.error} />
 
-      <p id="create-task-note" className="text-xs text-muted-foreground">
-        Turning action items into tasks on the team board arrives with the task board in Phase 8.
-      </p>
       <EditedNote insight={insight} />
       {!meeting.isHost && <HostOnlyNote hostName={meeting.hostName} />}
+
+      <CreateTasksDialog
+        meeting={meeting}
+        items={filing}
+        open={filing.length > 0}
+        onOpenChange={(next) => {
+          if (!next) setFiling([]);
+        }}
+      />
     </section>
   );
 }
