@@ -56,7 +56,12 @@ describe('routing', () => {
 
     // Proves the whole chain: refresh cookie -> access token in memory ->
     // guard lets the route through -> the page renders.
-    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
+    //
+    // Two lazy chunks (the shell, then the page) load behind the refresh, and
+    // under a full parallel run that alone can pass the default 1s wait.
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Settings' }, { timeout: 5_000 }),
+    ).toBeInTheDocument();
     await waitFor(() => expect(useAuthStore.getState().status).toBe('authenticated'));
   });
 

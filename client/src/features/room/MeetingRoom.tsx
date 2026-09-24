@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Check, Copy, Link2, ShieldAlert, Users } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  AlertTriangle,
+  Check,
+  Circle,
+  Copy,
+  Link2,
+  ShieldAlert,
+  Sparkles,
+  Users,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import type { Meeting } from '@intellmeet/shared';
 import { Badge } from '@/components/ui/badge';
@@ -15,6 +24,8 @@ import { RoomControls } from './RoomControls';
 import { VideoGrid } from './VideoGrid';
 import type { LocalMedia } from './useLocalMedia';
 import { useMeetingRoom } from './useMeetingRoom';
+import { useRecording } from './useRecording';
+import { useRecordingIndicator } from './useRecordingIndicator';
 
 interface Props {
   meeting: Meeting;
@@ -63,6 +74,16 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
   const room = useMeetingRoom({ meeting, localStream: media.stream, onForceMute: forceMute });
 
   const isHost = room.self?.isHost ?? meeting.isHost;
+  const indicator = useRecordingIndicator(meeting.id);
+
+  // Only the host records, but the hook runs for everyone (hooks cannot be
+  // conditional); for anyone else its controls are simply never shown.
+  const recorder = useRecording({
+    meetingId: meeting.id,
+    localStream: media.stream,
+    peers: room.peers,
+    announce: indicator.announce,
+  });
   const elapsed = useElapsed(meeting.startedAt);
   const sharingScreen = Boolean(screenStream);
 
@@ -173,10 +194,20 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
   // --- Leaving -------------------------------------------------------------
 
   const leave = useCallback(() => {
+    // A recording in progress is saved, not discarded. The upload carries on
+    // after the room unmounts; its toast reports how it went.
+    if (recorder.phase === 'recording') void recorder.stop();
     stopStream(screenStream);
     room.leave();
     onLeft();
-  }, [screenStream, room, onLeft]);
+  }, [screenStream, room, onLeft, recorder]);
+
+  const endForEveryone = useCallback(() => {
+    // Stop first, so the last seconds are in the file before the room closes.
+    if (recorder.phase === 'recording') void recorder.stop();
+    room.endForEveryone();
+    toast.success('Ending the meeting for everyone');
+  }, [recorder, room]);
 
   // A closed tab never runs React cleanup, so tell the room on the way out.
   useEffect(() => {
@@ -197,9 +228,17 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
         <p className="mt-2 text-sm text-muted-foreground">
           {meeting.hostName} ended it for everyone.
         </p>
-        <Button className="mt-6" onClick={() => navigate('/app')}>
-          Back to the dashboard
-        </Button>
+        <div className="mt-6 flex flex-wrap justify-center gap-2">
+          <Button asChild>
+            <Link to={`/app/meetings/${meeting.id}`}>
+              <Sparkles aria-hidden="true" />
+              Summary and action items
+            </Link>
+          </Button>
+          <Button variant="outline" onClick={() => navigate('/app')}>
+            Back to the dashboard
+          </Button>
+        </div>
       </div>
     );
   }
@@ -228,6 +267,18 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
             {peers.length + 1} in the room
           </p>
         </div>
+
+        {/* Everyone sees this, not only the host: being recorded is something
+            each participant has a right to know. A live region, so screen
+            readers announce it as it starts and stops. */}
+        <p role="status" aria-live="polite" className="text-sm">
+          {indicator.recording && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-1 font-medium text-destructive">
+              <Circle aria-hidden="true" className="size-2.5 animate-pulse fill-current" />
+              Recording
+            </span>
+          )}
+        </p>
 
         <Button
           variant="outline"
@@ -299,10 +350,18 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
             onToggleScreen={toggleScreen}
             onLeave={leave}
             onMuteEveryone={room.muteEveryone}
-            onEndForEveryone={() => {
-              room.endForEveryone();
-              toast.success('Ending the meeting for everyone');
-            }}
+            onEndForEveryone={endForEveryone}
+            recording={
+              isHost && recorder.supported
+                ? {
+                    phase: recorder.phase,
+                    onToggle: () => {
+                      if (recorder.phase === 'recording') void recorder.stop();
+                      else recorder.start();
+                    },
+                  }
+                : undefined
+            }
           />
         </div>
 

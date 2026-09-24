@@ -9,7 +9,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { AiStatusBadge } from '@/features/meetings/AiStatusBadge';
 import { CreateMeetingDialog } from '@/features/meetings/CreateMeetingDialog';
+import { useAiStatusUpdates } from '@/features/meetings/useAiStatusUpdates';
 import { listMeetings, meetingKeys } from '@/features/meetings/meetings.api';
 import { listTeams, teamKeys } from '@/features/teams/teams.api';
 import { useAuthStore } from '@/stores/authStore';
@@ -40,6 +42,10 @@ function MeetingRows() {
     queryFn: () => listMeetings({ limit: 5 }),
   });
 
+  // A recording finishing processing moves its badge from "Transcribing" to
+  // "Summary ready" here without a reload.
+  useAiStatusUpdates();
+
   if (isPending) {
     return (
       <div aria-live="polite" className="space-y-3">
@@ -67,7 +73,19 @@ function MeetingRows() {
     <ul className="divide-y">
       {data.meetings.map((meeting) => (
         <li key={meeting.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3">
-          <span className="min-w-0 flex-1 truncate font-medium">{meeting.title}</span>
+          {/* A live meeting links to its room; anything else to its page, which
+              is where the summary and action items are. */}
+          <Link
+            to={
+              meeting.status === 'live'
+                ? `/app/room/${meeting.roomCode}`
+                : `/app/meetings/${meeting.id}`
+            }
+            className="min-w-0 flex-1 truncate font-medium hover:underline focus-visible:underline"
+          >
+            {meeting.title}
+          </Link>
+          <AiStatusBadge status={meeting.aiStatus} />
           <StatusBadge status={meeting.status} />
           <span className="w-full text-xs text-muted-foreground sm:w-auto">
             {formatWhen(meeting.scheduledAt ?? meeting.startedAt ?? meeting.createdAt)}

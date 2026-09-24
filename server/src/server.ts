@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { connectMongo, disconnectMongo } from './config/db.js';
 import { env } from './config/env.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
+import { startMeetingQueue, type MeetingQueue } from './jobs/meetingQueue.js';
 import { logger } from './lib/logger.js';
 import { startDemoCleanup, stopDemoCleanup } from './modules/demo/demo.cleanup.js';
 import { attachRedisAdapter, closeSocketServer, createSocketServer } from './sockets/index.js';
@@ -36,7 +37,11 @@ async function bootstrap(): Promise<void> {
   // modules/demo/demo.cleanup.ts for why it is not a reset endpoint.
   startDemoCleanup();
 
-  registerShutdownHandlers(server);
+  // The post-meeting AI queue. The worker runs in this process when
+  // RUN_WORKER_IN_PROCESS=true, because Render's free tier has no workers.
+  const meetingQueue = startMeetingQueue();
+
+  registerShutdownHandlers(server, meetingQueue);
 }
 
 /**
@@ -47,7 +52,7 @@ async function bootstrap(): Promise<void> {
  * mid-response and Mongo/Redis connections are left for the server to time
  * out. Kubernetes (Phase 11) has the same contract.
  */
-function registerShutdownHandlers(server: Server): void {
+function registerShutdownHandlers(server: Server, meetingQueue: MeetingQueue): void {
   let shuttingDown = false;
 
   const shutdown = async (signal: string, exitCode = 0): Promise<void> => {
@@ -84,6 +89,12 @@ function registerShutdownHandlers(server: Server): void {
     try {
       await closed;
       clearTimeout(forceTimer);
+
+      // The worker waits for its running jobs to finish (or hands them back
+      // to the queue) before Mongo and Redis go away underneath them.
+      await meetingQueue.close().catch((error: unknown) => {
+        logger.warn({ err: error }, '[server] meeting queue did not close cleanly');
+      });
 
       // Close dependencies only after the HTTP server, so no handler is still
       // mid-query when the connection disappears.

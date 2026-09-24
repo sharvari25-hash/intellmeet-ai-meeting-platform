@@ -39,6 +39,16 @@ const optionalEnvString = z.preprocess(
   z.string().min(1).optional(),
 );
 
+/** A boolean flag written as `true`/`false`, which is all a .env file can say. */
+const envFlag = (fallback: boolean) =>
+  z
+    .enum(['true', 'false'])
+    .default(fallback ? 'true' : 'false')
+    .transform((value) => value === 'true');
+
+/** Which implementation of `AIProvider` does the transcription and analysis. */
+export const AI_PROVIDERS = ['mock', 'groq', 'gemini'] as const;
+
 /**
  * Environment contract for the server.
  *
@@ -157,17 +167,88 @@ const envSchema = z.object({
   TURN_URLS: optionalEnvString.pipe(z.string().transform(toList).optional()),
   TURN_USERNAME: optionalEnvString,
   TURN_CREDENTIAL: optionalEnvString,
+
+  // --- Recording + AI pipeline (Phase 6) -----------------------------------
+
+  /**
+   * `mock` needs no account and returns deterministic output derived from the
+   * transcript, so the whole pipeline runs offline and in tests. `groq` is the
+   * production default; `gemini` is the alternative. With `groq` selected and
+   * a Gemini key also present, Gemini becomes the automatic fallback.
+   */
+  AI_PROVIDER: z.enum(AI_PROVIDERS).default('mock'),
+
+  GROQ_API_KEY: optionalEnvString,
+  GROQ_TRANSCRIBE_MODEL: z.string().default('whisper-large-v3'),
+  GROQ_CHAT_MODEL: z.string().default('llama-3.3-70b-versatile'),
+
+  GEMINI_API_KEY: optionalEnvString,
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+
+  /**
+   * Largest audio file sent to the provider in one request. Groq's limit is
+   * 25 MB on the free tier; anything bigger is split with ffmpeg first.
+   */
+  AI_MAX_FILE_MB: z.coerce.number().positive().max(100).default(24),
+
+  /** Chunk length, in seconds, when a recording has to be split. */
+  AI_CHUNK_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
+
+  /** Attempts per job, with exponential backoff starting at AI_JOB_BACKOFF_MS. */
+  AI_JOB_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  AI_JOB_BACKOFF_MS: z.coerce.number().int().min(100).default(10_000),
+
+  /**
+   * Run the BullMQ worker inside the web process. Render's free tier has no
+   * background workers, so this is how production runs; set false when a
+   * separate `npm run worker` process consumes the queue instead.
+   */
+  RUN_WORKER_IN_PROCESS: envFlag(true),
+
+  /**
+   * Where recordings live when Cloudinary is not configured. Relative paths
+   * resolve against the server package. Local disk is fine for development;
+   * on Render it is ephemeral, which is why production wants Cloudinary.
+   */
+  RECORDINGS_DIR: z.string().default('.data/recordings'),
+
+  /** Upload ceiling for the server-side recording path. ~2h at 32 kbps. */
+  MAX_RECORDING_MB: z.coerce.number().positive().max(200).default(50),
+
+  /** Overrides the bundled ffmpeg binary, e.g. with a system install. */
+  FFMPEG_PATH: optionalEnvString,
 });
 
 export type Env = z.infer<typeof envSchema>;
 
+/**
+ * Cross-field rules zod cannot express per field: choosing a real AI provider
+ * without its key would otherwise boot fine and fail on the first meeting.
+ */
+function providerKeyIssues(env: Env): string[] {
+  const issues: string[] = [];
+  if (env.AI_PROVIDER === 'groq' && !env.GROQ_API_KEY) {
+    issues.push('  - GROQ_API_KEY: required when AI_PROVIDER=groq');
+  }
+  if (env.AI_PROVIDER === 'gemini' && !env.GEMINI_API_KEY) {
+    issues.push('  - GEMINI_API_KEY: required when AI_PROVIDER=gemini');
+  }
+  return issues;
+}
+
 function loadEnv(): Env {
   const parsed = envSchema.safeParse(process.env);
+  const crossFieldIssues = parsed.success ? providerKeyIssues(parsed.data) : [];
 
-  if (!parsed.success) {
-    const details = parsed.error.issues
-      .map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
-      .join('\n');
+  if (!parsed.success || crossFieldIssues.length > 0) {
+    const details = [
+      ...(parsed.success
+        ? []
+        : parsed.error.issues.map(
+            (issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`,
+          )),
+      ...crossFieldIssues,
+    ].join('\n');
 
     console.error(
       `\n[env] Invalid environment configuration:\n${details}\n\n` +

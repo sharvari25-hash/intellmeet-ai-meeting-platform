@@ -6,7 +6,10 @@ import { Notification } from '../notifications/notification.model.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
 import { cleanupDemoData, startDemoCleanup, stopDemoCleanup } from './demo.cleanup.js';
+import { MeetingInsight } from '../ai/insight.model.js';
+import { Transcript } from '../ai/transcript.model.js';
 import { DEMO_TEAM_SLUG } from './demo.constants.js';
+import { loadMeetingFixtures, seedDemoMeetings, weeksToShift } from './demo.meetings.js';
 
 const HOUR = 60 * 60 * 1000;
 const ago = (hours: number) => new Date(Date.now() - hours * HOUR);
@@ -231,5 +234,136 @@ describe('cleanup scheduling', () => {
       startDemoCleanup();
       stopDemoCleanup();
     }).not.toThrow();
+  });
+});
+
+describe('seeded past meetings', () => {
+  /** The demo account plus the three teammates the fixtures mention. */
+  async function seedPeople() {
+    const { demo, seededTeam } = await seedAccounts();
+    const names = ['Ada Lovelace', 'Grace Hopper', 'Alan Turing'];
+    const mates = await Promise.all(
+      names.map((name, index) =>
+        User.create({
+          name,
+          email: `mate${index}@intellmeet.app`,
+          passwordHash: 'x',
+          authProvider: 'local',
+        }),
+      ),
+    );
+
+    const people = [demo, ...mates].map((user) => ({ id: user._id.toString(), name: user.name }));
+    return { demo, seededTeam, people };
+  }
+
+  it('creates the sample meetings with transcripts and summaries', async () => {
+    const { seededTeam, people } = await seedPeople();
+
+    const result = await seedDemoMeetings({ teamId: seededTeam._id.toString(), people });
+
+    expect(result).toEqual({ created: 3, updated: 0 });
+
+    const meetings = await Meeting.find({ seeded: true });
+    expect(meetings).toHaveLength(3);
+    for (const meeting of meetings) {
+      expect(meeting.status).toBe('ended');
+      expect(meeting.aiStatus).toBe('done');
+      expect(meeting.teamId.toString()).toBe(seededTeam._id.toString());
+    }
+
+    expect(await Transcript.countDocuments({})).toBe(3);
+    const insights = await MeetingInsight.find({});
+    expect(insights).toHaveLength(3);
+
+    // Every reference owner is one of the seeded people, so each resolves.
+    const items = insights.flatMap((insight) => insight.actionItems);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((item) => item.assigneeId !== null)).toBe(true);
+  });
+
+  it('is idempotent: a second run refreshes rather than duplicates', async () => {
+    const { seededTeam, people } = await seedPeople();
+
+    await seedDemoMeetings({ teamId: seededTeam._id.toString(), people });
+    const second = await seedDemoMeetings({ teamId: seededTeam._id.toString(), people });
+
+    expect(second).toEqual({ created: 0, updated: 3 });
+    expect(await Meeting.countDocuments({})).toBe(3);
+    expect(await Transcript.countDocuments({})).toBe(3);
+    expect(await MeetingInsight.countDocuments({})).toBe(3);
+  });
+
+  it('keeps "Friday" a Friday when it moves the dates', async () => {
+    const { seededTeam, people } = await seedPeople();
+    const fixtures = await loadMeetingFixtures();
+
+    await seedDemoMeetings({
+      teamId: seededTeam._id.toString(),
+      people,
+      fixtures,
+      now: new Date('2027-03-03T12:00:00Z'),
+    });
+
+    for (const fixture of fixtures) {
+      const meeting = await Meeting.findOne({ seedKey: fixture.key });
+      const original = new Date(fixture.meetingDate);
+      expect(meeting?.startedAt?.getUTCDay()).toBe(original.getUTCDay());
+      expect(meeting?.startedAt?.getTime()).toBeLessThan(new Date('2027-03-03').getTime());
+    }
+  });
+
+  it('survives the cleanup, even when asked to sweep everything', async () => {
+    const { seededTeam, people } = await seedPeople();
+    await seedDemoMeetings({ teamId: seededTeam._id.toString(), people });
+
+    const result = await cleanupDemoData({ olderThanHours: 0 });
+
+    expect(result.meetings).toBe(0);
+    expect(await Meeting.countDocuments({ seeded: true })).toBe(3);
+    expect(await Transcript.countDocuments({})).toBe(3);
+    expect(await MeetingInsight.countDocuments({})).toBe(3);
+  });
+
+  it('still sweeps an ordinary stale meeting, taking its AI output with it', async () => {
+    const { demo, seededTeam, people } = await seedPeople();
+    await seedDemoMeetings({ teamId: seededTeam._id.toString(), people });
+
+    const stale = await createMeeting(seededTeam._id, demo._id, 'STALE234', 10);
+    await Transcript.create({ meetingId: stale._id, text: 'x', provider: 'mock' });
+    await MeetingInsight.create({ meetingId: stale._id, summary: 'x', provider: 'mock' });
+
+    const result = await cleanupDemoData({ olderThanHours: 6 });
+
+    expect(result.meetings).toBe(1);
+    expect(await Meeting.exists({ _id: stale._id })).toBeNull();
+    expect(await Transcript.countDocuments({ meetingId: stale._id })).toBe(0);
+    expect(await MeetingInsight.countDocuments({ meetingId: stale._id })).toBe(0);
+    expect(await Meeting.countDocuments({ seeded: true })).toBe(3);
+  });
+});
+
+describe('sample meeting fixtures', () => {
+  it('are all valid, with owners who are listed as participants', async () => {
+    const fixtures = await loadMeetingFixtures();
+
+    expect(fixtures.length).toBeGreaterThanOrEqual(2);
+    for (const fixture of fixtures) {
+      for (const item of fixture.reference.actionItems) {
+        if (item.assigneeName) expect(fixture.participants).toContain(item.assigneeName);
+      }
+      for (const segment of fixture.segments) {
+        if (segment.speaker) expect(fixture.participants).toContain(segment.speaker);
+      }
+    }
+  });
+
+  it('shift by whole weeks only', () => {
+    const monday = new Date('2026-09-14T09:30:00Z');
+    const weeks = weeksToShift(monday, new Date('2026-12-02T12:00:00Z'), 1);
+    const shifted = new Date(monday.getTime() + weeks * 7 * 24 * 60 * 60 * 1000);
+
+    expect(shifted.getUTCDay()).toBe(1);
+    expect(shifted.getTime()).toBeLessThanOrEqual(new Date('2026-12-01T12:00:00Z').getTime());
   });
 });

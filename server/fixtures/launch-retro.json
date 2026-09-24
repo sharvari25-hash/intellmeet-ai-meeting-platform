@@ -1,0 +1,150 @@
+{
+  "key": "q3-launch-retro",
+  "title": "Q3 launch retrospective",
+  "description": "What went well and what did not in the Q3 pricing launch.",
+  "meetingDate": "2026-09-10T14:00:00.000Z",
+  "durationSec": 1680,
+  "host": "Demo User",
+  "participants": ["Demo User", "Ada Lovelace", "Grace Hopper", "Alan Turing"],
+  "segments": [
+    {
+      "start": 0,
+      "end": 11,
+      "speaker": "Demo User",
+      "text": "Thanks for making time. This is the retro for last week's pricing launch. Usual format: what went well, what did not, and what we change."
+    },
+    {
+      "start": 12,
+      "end": 27,
+      "speaker": "Grace Hopper",
+      "text": "Well first. The deploy itself was flawless. Zero downtime, the feature flags worked, and we rolled out to all regions in under an hour."
+    },
+    {
+      "start": 28,
+      "end": 40,
+      "speaker": "Ada Lovelace",
+      "text": "And marketing was in sync for once. The announcement email went out ten minutes after the flag flipped, which is exactly what we planned."
+    },
+    {
+      "start": 41,
+      "end": 58,
+      "speaker": "Alan Turing",
+      "text": "What did not go well: the pricing page showed the old annual price for about three hours. Nobody noticed until a customer emailed support. We had no automated check on that page at all."
+    },
+    {
+      "start": 59,
+      "end": 70,
+      "speaker": "Demo User",
+      "text": "That one cost us. Two customers asked for refunds at the difference. How do we stop it happening again?"
+    },
+    {
+      "start": 71,
+      "end": 84,
+      "speaker": "Alan Turing",
+      "text": "A smoke test in CI that loads the pricing page and compares the prices against the billing config. It's small. I can add the pricing page smoke test by Tuesday."
+    },
+    { "start": 85, "end": 90, "speaker": "Demo User", "text": "Please do. Tuesday works." },
+    {
+      "start": 91,
+      "end": 107,
+      "speaker": "Grace Hopper",
+      "text": "The other problem was docs. The help centre articles were merged two days after launch, so support had nothing to point people at."
+    },
+    {
+      "start": 108,
+      "end": 122,
+      "speaker": "Ada Lovelace",
+      "text": "Should we just delay launches until docs are done? Or have support write them?"
+    },
+    {
+      "start": 123,
+      "end": 138,
+      "speaker": "Demo User",
+      "text": "Support writing them won't work, they don't know the feature early enough. We agreed last quarter to try this, so let's make it a rule: docs must be merged before code freeze, or the launch date moves."
+    },
+    {
+      "start": 139,
+      "end": 146,
+      "speaker": "Grace Hopper",
+      "text": "I'm fine with that. It forces the conversation earlier."
+    },
+    {
+      "start": 147,
+      "end": 163,
+      "speaker": "Ada Lovelace",
+      "text": "Last one: on-call. Nobody was sure who was on call on launch night. Two of us got paged and one person thought they were off."
+    },
+    {
+      "start": 164,
+      "end": 177,
+      "speaker": "Demo User",
+      "text": "Right. Decision: the on-call rota gets published at least a week ahead, in the team channel, and it is pinned. Ada, can you publish the October rota by the twenty-fifth?"
+    },
+    {
+      "start": 178,
+      "end": 184,
+      "speaker": "Ada Lovelace",
+      "text": "Yes, I'll publish the October on-call rota by the twenty-fifth."
+    },
+    {
+      "start": 185,
+      "end": 201,
+      "speaker": "Grace Hopper",
+      "text": "I think what ties all of this together is that we have no launch checklist. Everything we missed is something a checklist would have caught."
+    },
+    {
+      "start": 202,
+      "end": 214,
+      "speaker": "Demo User",
+      "text": "Agreed. We will adopt a launch checklist for every release from now on. Grace, you raised it, would you draft it by next Thursday?"
+    },
+    {
+      "start": 215,
+      "end": 222,
+      "speaker": "Grace Hopper",
+      "text": "Sure, I'll draft the launch checklist by next Thursday and share it for comments."
+    },
+    {
+      "start": 223,
+      "end": 237,
+      "speaker": "Alan Turing",
+      "text": "Do we want a follow-up in a month to see if the checklist actually helped?"
+    },
+    {
+      "start": 238,
+      "end": 248,
+      "speaker": "Demo User",
+      "text": "Yes. I'll book a follow-up review for next month. Thanks all, good retro."
+    }
+  ],
+  "reference": {
+    "summary": "The team held a retrospective on the Q3 pricing launch. The deploy went smoothly with zero downtime, and marketing's announcement was well coordinated. Problems were an outdated price on the pricing page for about three hours, which led to refund requests, help-centre docs merged two days after launch, and confusion over who was on call. The team agreed on a launch checklist, a rule that docs must be merged before code freeze, and publishing the on-call rota a week ahead.",
+    "keyDecisions": [
+      "Docs must be merged before code freeze, or the launch date moves",
+      "The on-call rota is published at least a week ahead and pinned in the team channel",
+      "Adopt a launch checklist for every release"
+    ],
+    "actionItems": [
+      {
+        "text": "Add a CI smoke test that checks pricing page prices against the billing config",
+        "assigneeName": "Alan Turing",
+        "dueDate": "2026-09-15"
+      },
+      {
+        "text": "Publish the October on-call rota",
+        "assigneeName": "Ada Lovelace",
+        "dueDate": "2026-09-25"
+      },
+      {
+        "text": "Draft the launch checklist and share it for comments",
+        "assigneeName": "Grace Hopper",
+        "dueDate": "2026-09-17"
+      },
+      {
+        "text": "Book a follow-up review of the launch checklist for next month",
+        "assigneeName": "Demo User",
+        "dueDate": null
+      }
+    ]
+  }
+}

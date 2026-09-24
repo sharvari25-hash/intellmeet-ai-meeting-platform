@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bell } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { SOCKET_EVENTS } from '@intellmeet/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,6 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuthStore } from '@/stores/authStore';
 import { useSocketStore } from '@/stores/socketStore';
+import { notificationLink } from './notificationLink';
 import { listNotifications, markAllRead, markRead, notificationKeys } from './notifications.api';
 
 /** "3 minutes ago" without pulling in a date library for one string. */
@@ -31,6 +33,7 @@ export function NotificationBell() {
   const status = useAuthStore((state) => state.status);
   const socket = useSocketStore((state) => state.socket);
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const { data } = useQuery({
     queryKey: notificationKeys.all,
@@ -115,6 +118,8 @@ export function NotificationBell() {
             className="flex-col items-start gap-0.5"
             onSelect={() => {
               if (!notification.readAt) readOne.mutate(notification.id);
+              const link = notificationLink(notification);
+              if (link) navigate(link);
             }}
           >
             <span className="flex w-full items-center gap-2">

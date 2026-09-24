@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { joinFromLobby, signInAsDemo, signInAsTeammate, startMeeting } from './helpers';
 
 /**
  * Two browsers, one meeting.
@@ -9,66 +10,82 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
  *
  * This is a smoke test, not a media-quality test. It proves the parts that
  * only exist when two real browsers are involved - the handshake, the roster,
- * the peer connection reaching `connected`, and chat crossing between them -
- * which unit tests with a fake `RTCPeerConnection` cannot.
+ * the peer connection reaching `connected`, frames actually decoding in each
+ * remote tile, and chat crossing between them - which unit tests with a fake
+ * `RTCPeerConnection` cannot.
  */
-
-const DEMO_TEAMMATE = { email: 'ada@intellmeet.app', password: 'DemoPassword123' };
-
-/** The seeded team both accounts belong to. */
-const DEMO_TEAM = 'IntellMeet Demo Team';
 
 /**
- * Signs in through the landing page's demo button.
+ * How long two browsers on one machine may take to connect and decode video.
  *
- * Waits on the URL, not on a heading. The sign-in page's own h1 is "Welcome
- * back" too, so asserting on the text alone passes instantly while the request
- * is still in flight - and the next navigation then cancels it.
+ * Measured at 0.7-1.6s. Deliberately below `CONNECT_WATCHDOG_MS` (5s) in
+ * MeshTransport: a join that stalls and is only rescued by the watchdog still
+ * fails here, instead of hiding as a test that is merely a bit slow.
  */
-async function signInAsDemo(page: Page): Promise<void> {
-  await page.goto('/');
-  await page
-    .getByRole('button', { name: /try live demo/i })
-    .first()
-    .click();
-  await page.waitForURL('**/app');
-}
+const CONNECT_WITHIN_MS = 4_500;
 
-/** Signs in as a seeded team-mate, so the two contexts are different people. */
-async function signInAsTeammate(page: Page): Promise<void> {
-  await page.goto('/login');
-  await page.getByLabel('Email').fill(DEMO_TEAMMATE.email);
-  await page.getByLabel('Password').fill(DEMO_TEAMMATE.password);
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.waitForURL('**/app');
+declare global {
+  interface Window {
+    __peerConnections?: RTCPeerConnection[];
+  }
 }
 
 /**
- * Creates a live meeting in the seeded team and lands in its lobby.
+ * Records every RTCPeerConnection the page creates.
  *
- * The team is selected by name rather than left on the default. The demo
- * account is shared and may well be in more than one team, and a meeting
- * created in the wrong one is invisible to the other participant - which is
- * a confusing way for this test to fail.
+ * Lets the test ask the browser itself whether ICE connected, rather than
+ * inferring it from the UI. Installed before any page script runs, so the app
+ * constructs the subclass without knowing.
  */
-async function startMeeting(page: Page, title: string): Promise<string> {
-  await page.getByRole('button', { name: /new meeting/i }).click();
-  await page.getByLabel('Team').selectOption({ label: DEMO_TEAM });
-  await page.getByLabel('Title').fill(title);
-  await page.getByRole('button', { name: /start now/i }).click();
+async function recordPeerConnections(context: BrowserContext): Promise<void> {
+  await context.addInitScript(() => {
+    const created: RTCPeerConnection[] = [];
+    window.__peerConnections = created;
 
-  // Creating a live meeting navigates straight into its lobby.
-  await page.waitForURL(/\/app\/room\/[A-Z2-9]+$/);
-
-  const roomCode = page.url().split('/').pop();
-  if (!roomCode) throw new Error('No room code in the URL after creating a meeting');
-  return roomCode;
+    const Native = window.RTCPeerConnection;
+    window.RTCPeerConnection = class extends Native {
+      constructor(configuration?: RTCConfiguration) {
+        super(configuration);
+        created.push(this);
+      }
+    };
+  });
 }
 
-/** Walks the lobby and lands in the live room. */
-async function joinFromLobby(page: Page): Promise<void> {
-  await expect(page.getByRole('button', { name: 'Join meeting' })).toBeEnabled();
-  await page.getByRole('button', { name: 'Join meeting' }).click();
+/**
+ * Asserts real media is flowing into this page: its one live peer connection
+ * reached `connected`, and every remote <video> has decoded a frame.
+ *
+ * `videoWidth` is zero until a frame has actually been decoded, so it is the
+ * difference between "a tile exists" and "you can see the other person".
+ */
+async function expectLiveVideo(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          (window.__peerConnections ?? [])
+            .filter((pc) => pc.connectionState !== 'closed')
+            .map((pc) => pc.connectionState),
+        ),
+      { timeout: CONNECT_WITHIN_MS },
+    )
+    .toEqual(['connected']);
+
+  const remoteVideos = page.locator('video[data-tile="remote"]');
+  await expect(remoteVideos).toHaveCount(1);
+  await expect
+    .poll(
+      () =>
+        remoteVideos.evaluateAll((videos) =>
+          videos.every((video) => (video as HTMLVideoElement).videoWidth > 0),
+        ),
+      { timeout: CONNECT_WITHIN_MS },
+    )
+    .toBe(true);
+
+  // ...and the tile has stopped saying it is waiting.
+  await expect(page.getByText('Connecting…')).toHaveCount(0);
 }
 
 test.describe('meeting room', () => {
@@ -83,6 +100,8 @@ test.describe('meeting room', () => {
   test('two people join the same room, see each other and exchange chat', async ({ browser }) => {
     hostContext = await browser.newContext();
     guestContext = await browser.newContext();
+    await recordPeerConnections(hostContext);
+    await recordPeerConnections(guestContext);
 
     const host = await hostContext.newPage();
     const guest = await guestContext.newPage();
@@ -91,9 +110,9 @@ test.describe('meeting room', () => {
 
     await signInAsDemo(host);
 
-    const roomCode = await startMeeting(host, 'Playwright smoke test');
+    const roomCode = await startMeeting(host, 'E2E smoke test');
     await joinFromLobby(host);
-    await expect(host.getByRole('heading', { name: 'Playwright smoke test' })).toBeVisible();
+    await expect(host.getByRole('heading', { name: 'E2E smoke test' })).toBeVisible();
 
     // --- The guest joins the same room by code ------------------------------
 
@@ -111,6 +130,17 @@ test.describe('meeting room', () => {
     // Two video elements each: their own tile plus the remote one.
     await expect(host.locator('video')).toHaveCount(2);
     await expect(guest.locator('video')).toHaveCount(2);
+
+    // ...and the remote one is actually playing, in both directions.
+    await expectLiveVideo(host);
+    await expectLiveVideo(guest);
+
+    // Toggling the microphone must not rebuild the connection. It once left
+    // and rejoined the room, which would show up here as a second connection.
+    await guest.getByRole('button', { name: 'Turn your microphone off' }).click();
+    await expect(host.getByLabel('Ada Lovelace is muted')).toBeVisible();
+    await expectLiveVideo(guest);
+    expect(await guest.evaluate(() => window.__peerConnections?.length)).toBe(1);
 
     // --- Chat crosses between them ------------------------------------------
 
@@ -139,7 +169,7 @@ test.describe('meeting room', () => {
 
     await signInAsDemo(host);
 
-    await startMeeting(host, 'Controls smoke test');
+    await startMeeting(host, 'E2E controls test');
     await joinFromLobby(host);
 
     const muteButton = host.getByRole('button', { name: 'Turn your microphone off' });

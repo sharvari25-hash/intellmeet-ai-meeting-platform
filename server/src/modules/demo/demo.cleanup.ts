@@ -3,6 +3,7 @@ import { cacheDel, cacheKeys } from '../../lib/cache.js';
 import { logger } from '../../lib/logger.js';
 import { Message } from '../chat/message.model.js';
 import { Meeting } from '../meetings/meeting.model.js';
+import { deleteMeetingArtifacts } from '../meetings/meeting.service.js';
 import { Notification } from '../notifications/notification.model.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
@@ -25,9 +26,11 @@ const EMPTY: DemoCleanupResult = { meetings: 0, messages: 0, teams: 0, notificat
  * with "test", "asdf" and a dozen abandoned meetings, and the next reviewer's
  * first impression is somebody else's debris.
  *
- * Two things are never touched:
+ * Three things are never touched:
  *
  * - **The seeded team**, matched by slug. It is the thing the demo is *for*.
+ * - **Seeded meetings** (`seeded: true`), the sample history with transcripts
+ *   and summaries that the landing page promises is already there.
  * - **Anything newer than the cutoff.** This is the whole reason the job is
  *   age-based rather than a reset button: a reviewer mid-demo must never have
  *   the room deleted underneath them by a job, or by another reviewer holding
@@ -60,22 +63,32 @@ export async function cleanupDemoData(
   //     a team that is about to disappear regardless of its own age ---------
 
   const meetingFilter = {
+    // Seeded past meetings are the demo's sample content. They are hosted by
+    // the demo account and are, by design, older than any cutoff - without
+    // this they would be the first thing the sweep removed.
+    seeded: { $ne: true },
     $or: [
       { hostId: { $in: demoIds }, createdAt: { $lt: cutoff } },
       ...(staleTeamIds.length > 0 ? [{ teamId: { $in: staleTeamIds } }] : []),
     ],
   };
 
-  const staleMeetings = await Meeting.find(meetingFilter).select('_id roomCode');
+  const staleMeetings = await Meeting.find(meetingFilter).select('_id roomCode recording');
   const meetingIds = staleMeetings.map((meeting) => meeting._id);
 
   // Ordered deliberately: children before parents, so a crash halfway through
   // leaves orphaned parents (harmless, retried next run) rather than orphaned
   // children pointing at ids that no longer resolve.
+  //
+  // Messages are deleted here, before the shared cascade below, only so the
+  // result can report how many there were.
   const messages =
     meetingIds.length > 0
       ? (await Message.deleteMany({ meetingId: { $in: meetingIds } })).deletedCount
       : 0;
+
+  // Transcripts, insights, notifications and recording files.
+  await deleteMeetingArtifacts(staleMeetings);
 
   const meetings =
     meetingIds.length > 0

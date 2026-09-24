@@ -8,6 +8,17 @@ interface SignalPayload {
   candidate?: RTCIceCandidateInit;
 }
 
+/**
+ * How long a peer may sit in `new` - ICE not even started - before the
+ * watchdog steps in. A healthy connection on the same network leaves `new`
+ * within a second; one still there after this has stalled rather than being
+ * slow, and waiting longer only means a longer blank tile.
+ */
+export const CONNECT_WATCHDOG_MS = 5000;
+
+/** Watchdog interventions per peer before telling the user it is not working. */
+const MAX_WATCHDOG_ATTEMPTS = 3;
+
 interface DeliveredSignal {
   from: string;
   fromUserId: string;
@@ -41,6 +52,27 @@ interface PeerEntry {
    * is exactly what makes it a tie-break rather than a stand-off.
    */
   polite: boolean;
+  /**
+   * True for a peer that joined after us, until its first offer arrives.
+   *
+   * The newcomer offers and everyone already in the room answers, so a join
+   * never starts with both sides offering at once. That collision is
+   * survivable in theory, but in practice it routes every join through a
+   * rollback - and Chrome intermittently never gathers ICE candidates for the
+   * answer that follows one, leaving the call stuck with ICE not even started.
+   */
+  awaitingOffer: boolean;
+  watchdog: ReturnType<typeof setTimeout> | null;
+  watchdogAttempts: number;
+}
+
+export interface AddPeerOptions {
+  /**
+   * Whether we open the negotiation. True when the peer was already in the
+   * room when we arrived (we are the newcomer); false when the room tells us
+   * somebody new has joined, in which case they will send the offer.
+   */
+  initiator: boolean;
 }
 
 /**
@@ -83,13 +115,13 @@ export class MeshTransport implements MediaTransport {
   /**
    * Adds a participant the room told us about and opens a connection to them.
    *
-   * Both sides call this for each other and both will fire
-   * `negotiationneeded`. That is deliberate: letting perfect negotiation
-   * resolve the resulting collision is simpler and more robust than inventing
-   * a rule about who offers first, which breaks the moment two people join in
-   * the same instant.
+   * Only the newcomer offers (`initiator`); the people already in the room
+   * wait for that offer and attach their tracks to it. Perfect negotiation is
+   * still there for everything after the first exchange - and for the rare
+   * join where both sides do end up offering - but a routine join no longer
+   * collides by construction.
    */
-  addPeer(participant: Participant): void {
+  addPeer(participant: Participant, { initiator }: AddPeerOptions): void {
     if (this.closed) return;
     if (participant.socketId === this.selfSocketId) return;
     if (this.peers.has(participant.socketId)) {
@@ -100,12 +132,7 @@ export class MeshTransport implements MediaTransport {
       return;
     }
 
-    const pc = new RTCPeerConnection({
-      iceServers: this.iceServers as RTCIceServer[],
-      // Pooling lets ICE gathering start before the first offer is created,
-      // which shaves a round trip off the time to first frame.
-      iceCandidatePoolSize: 2,
-    });
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers as RTCIceServer[] });
 
     const entry: PeerEntry = {
       pc,
@@ -118,11 +145,15 @@ export class MeshTransport implements MediaTransport {
       // Deterministic and opposite on the two ends: whoever has the
       // lexicographically smaller socket id is the polite one.
       polite: this.selfSocketId < participant.socketId,
+      awaitingOffer: !initiator,
+      watchdog: null,
+      watchdogAttempts: 0,
     };
 
     this.peers.set(participant.socketId, entry);
     this.bindPeer(entry);
     this.publishTo(entry);
+    this.armWatchdog(entry);
     this.emitPeers();
   }
 
@@ -130,6 +161,7 @@ export class MeshTransport implements MediaTransport {
     const entry = this.peers.get(socketId);
     if (!entry) return;
 
+    this.disarmWatchdog(entry);
     entry.pc.close();
     this.peers.delete(socketId);
     this.emitPeers();
@@ -166,7 +198,10 @@ export class MeshTransport implements MediaTransport {
 
     this.unbindSocket();
 
-    for (const entry of this.peers.values()) entry.pc.close();
+    for (const entry of this.peers.values()) {
+      this.disarmWatchdog(entry);
+      entry.pc.close();
+    }
     this.peers.clear();
     this.emitPeers();
   }
@@ -194,7 +229,21 @@ export class MeshTransport implements MediaTransport {
   }
 
   private publishTo(entry: PeerEntry): void {
-    if (!this.localStream) return;
+    // Tracks added now would fire `negotiationneeded` and make us offer too.
+    // They are attached to the peer's offer when it arrives instead.
+    if (entry.awaitingOffer) return;
+
+    if (!this.localStream) {
+      // Somebody who joined with no camera or microphone still has to open
+      // the negotiation, or nobody would: the people already here are waiting
+      // for an offer. Receive-only transceivers give the offer something to
+      // say.
+      if (entry.pc.getTransceivers().length === 0) {
+        entry.pc.addTransceiver('audio', { direction: 'recvonly' });
+        entry.pc.addTransceiver('video', { direction: 'recvonly' });
+      }
+      return;
+    }
 
     for (const track of this.localStream.getTracks()) {
       const existing = entry.pc.getSenders().find((sender) => sender.track?.kind === track.kind);
@@ -245,6 +294,10 @@ export class MeshTransport implements MediaTransport {
 
     pc.onconnectionstatechange = () => {
       entry.connectionState = pc.connectionState;
+      if (pc.connectionState === 'connected') {
+        this.disarmWatchdog(entry);
+        entry.watchdogAttempts = 0;
+      }
       this.emitPeers();
     };
 
@@ -255,6 +308,52 @@ export class MeshTransport implements MediaTransport {
       // call recovers without the peer's tile disappearing.
       if (pc.iceConnectionState === 'failed') pc.restartIce();
     };
+  }
+
+  /**
+   * Recovers a connection whose ICE never started.
+   *
+   * The ICE restart above only fires on `failed`, and a connection that never
+   * gathered a candidate never gets that far: it sits in `new` indefinitely,
+   * which the user sees as a tile that never fills in. After
+   * `CONNECT_WATCHDOG_MS` in that state:
+   *
+   * - if we are still waiting for the newcomer's offer, stop waiting and offer
+   *   ourselves - the offer was lost, or never coming;
+   * - otherwise the impolite side restarts ICE, which renegotiates with fresh
+   *   credentials and forces both ends to gather again. Only the impolite side,
+   *   so the two ends do not both restart and collide.
+   *
+   * A connection that is merely slow (`connecting`, checks in progress) is left
+   * alone: ICE's own timers will either succeed or reach `failed`.
+   */
+  private armWatchdog(entry: PeerEntry): void {
+    this.disarmWatchdog(entry);
+
+    entry.watchdog = setTimeout(() => {
+      entry.watchdog = null;
+      if (this.closed || entry.pc.connectionState !== 'new') return;
+
+      entry.watchdogAttempts += 1;
+      if (entry.watchdogAttempts > MAX_WATCHDOG_ATTEMPTS) {
+        this.callbacks.onError(`Could not connect to ${entry.participant.name}.`);
+        return;
+      }
+
+      if (entry.awaitingOffer) {
+        entry.awaitingOffer = false;
+        this.publishTo(entry);
+      } else if (!entry.polite) {
+        entry.pc.restartIce();
+      }
+
+      this.armWatchdog(entry);
+    }, CONNECT_WATCHDOG_MS);
+  }
+
+  private disarmWatchdog(entry: PeerEntry): void {
+    if (entry.watchdog) clearTimeout(entry.watchdog);
+    entry.watchdog = null;
   }
 
   // --- Signalling ----------------------------------------------------------
@@ -324,6 +423,14 @@ export class MeshTransport implements MediaTransport {
         entry.settingRemoteAnswerPending = description.type === 'answer';
         await entry.pc.setRemoteDescription(description);
         entry.settingRemoteAnswerPending = false;
+
+        if (description.type === 'offer' && entry.awaitingOffer) {
+          // The newcomer's offer is here. Tracks added now attach to the
+          // transceivers it created, so the answer carries our media and no
+          // second round of negotiation is needed.
+          entry.awaitingOffer = false;
+          this.publishTo(entry);
+        }
 
         if (description.type === 'offer') {
           await entry.pc.setLocalDescription();

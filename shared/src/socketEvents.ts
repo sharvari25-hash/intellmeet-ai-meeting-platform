@@ -43,7 +43,9 @@ export const SOCKET_EVENTS = {
   // --- Notifications ---
   NOTIFY_NEW: 'notify:new',
 
-  // --- AI pipeline status (Phase 6) ---
+  // --- Recording + AI pipeline status (Phase 6) ---
+  /** Host -> server -> room: recording started/stopped, for the indicator. */
+  RECORDING_STATE: 'recording:state',
   AI_STATUS: 'ai:status',
 
   // --- Kanban board (Phase 8) ---
@@ -159,6 +161,12 @@ export const roomParticipantsSchema = z.object({
   /** The recipient's own socket id, so it can exclude itself from the mesh. */
   selfSocketId: z.string(),
   participants: z.array(participantSchema),
+  /**
+   * Whether the meeting is being recorded right now. Carried on the roster so
+   * somebody who joins mid-recording sees the indicator immediately, rather
+   * than only when the next start/stop is broadcast.
+   */
+  recording: z.boolean(),
 });
 export type RoomParticipants = z.infer<typeof roomParticipantsSchema>;
 

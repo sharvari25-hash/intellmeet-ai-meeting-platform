@@ -58,6 +58,9 @@ desktop.ini
 # ---- Local data volumes (docker-compose) ----
 .docker-data/
 
+# ---- Local recordings (server/.data/recordings, the no-Cloudinary path) ----
+.data/
+
 # ---- Agent / planning files: must never be committed ----
 PROJECT_PLAN.md
 intellmeet_agent_prompt.md

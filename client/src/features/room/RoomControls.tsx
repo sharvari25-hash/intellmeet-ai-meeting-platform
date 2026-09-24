@@ -1,4 +1,16 @@
-import { Mic, MicOff, MonitorUp, MonitorX, PhoneOff, Video, VideoOff, VolumeX } from 'lucide-react';
+import {
+  Circle,
+  Loader2,
+  Mic,
+  MicOff,
+  MonitorUp,
+  MonitorX,
+  PhoneOff,
+  Square,
+  Video,
+  VideoOff,
+  VolumeX,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { screenShareSupported } from '@/lib/webrtc/devices';
 
@@ -13,6 +25,11 @@ interface Props {
   onLeave: () => void;
   onMuteEveryone: () => void;
   onEndForEveryone: () => void;
+  /** The host's recording control; omitted where recording is unsupported. */
+  recording?: {
+    phase: 'idle' | 'recording' | 'saving';
+    onToggle: () => void;
+  };
 }
 
 /**
@@ -34,6 +51,7 @@ export function RoomControls({
   onLeave,
   onMuteEveryone,
   onEndForEveryone,
+  recording,
 }: Props) {
   return (
     <div className="flex flex-wrap items-center justify-center gap-2 rounded-xl border bg-card p-2">
@@ -74,6 +92,28 @@ export function RoomControls({
       {isHost && (
         <>
           <span aria-hidden="true" className="mx-1 h-6 w-px bg-border" />
+          {recording && (
+            <Button
+              variant={recording.phase === 'recording' ? 'destructive' : 'outline'}
+              size="sm"
+              aria-pressed={recording.phase === 'recording'}
+              disabled={recording.phase === 'saving'}
+              onClick={recording.onToggle}
+            >
+              {recording.phase === 'saving' ? (
+                <Loader2 aria-hidden="true" className="animate-spin" />
+              ) : recording.phase === 'recording' ? (
+                <Square aria-hidden="true" className="fill-current" />
+              ) : (
+                <Circle aria-hidden="true" className="fill-destructive text-destructive" />
+              )}
+              {recording.phase === 'saving'
+                ? 'Saving recording…'
+                : recording.phase === 'recording'
+                  ? 'Stop recording'
+                  : 'Record'}
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={onMuteEveryone}>
             <VolumeX aria-hidden="true" />
             Mute all

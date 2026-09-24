@@ -94,4 +94,35 @@ describe('<RoomControls />', () => {
       'true',
     );
   });
+
+  describe('recording', () => {
+    it('offers the host a Record button that flips to Stop', async () => {
+      const onToggle = vi.fn();
+      const { user } = setup({ isHost: true, recording: { phase: 'idle', onToggle } });
+
+      await user.click(screen.getByRole('button', { name: 'Record' }));
+      expect(onToggle).toHaveBeenCalledOnce();
+    });
+
+    it('shows a pressed Stop button while recording', () => {
+      setup({ isHost: true, recording: { phase: 'recording', onToggle: vi.fn() } });
+
+      expect(screen.getByRole('button', { name: 'Stop recording' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+    });
+
+    it('cannot be pressed again while the file is uploading', () => {
+      setup({ isHost: true, recording: { phase: 'saving', onToggle: vi.fn() } });
+
+      expect(screen.getByRole('button', { name: /saving recording/i })).toBeDisabled();
+    });
+
+    it('is not shown to anyone but the host', () => {
+      setup({ isHost: false, recording: { phase: 'idle', onToggle: vi.fn() } });
+
+      expect(screen.queryByRole('button', { name: 'Record' })).not.toBeInTheDocument();
+    });
+  });
 });
