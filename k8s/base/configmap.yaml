@@ -1,0 +1,29 @@
+# Non-secret configuration for the API, injected as environment variables.
+# Every variable is documented in server/.env.example and validated by zod at
+# start-up (server/src/config/env.ts), so a typo here stops the pod with a
+# readable message instead of misbehaving later.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: intellmeet-config
+  namespace: intellmeet
+  labels:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/part-of: intellmeet
+data:
+  NODE_ENV: production
+  PORT: '5000'
+  LOG_LEVEL: info
+  # The public origin the browser loads the client from (the Ingress host).
+  CORS_ORIGINS: https://intellmeet.example.com
+  CLIENT_URL: https://intellmeet.example.com
+  # Each API pod also consumes the AI queue. BullMQ workers compete for jobs
+  # through Redis, so any number of replicas share the work safely. The Helm
+  # chart can move this into a separate worker Deployment instead.
+  RUN_WORKER_IN_PROCESS: 'true'
+  AI_PROVIDER: mock
+  GEMINI_MODEL: gemini-3.5-flash
+  GEMINI_FALLBACK_MODELS: gemini-3.6-flash,gemini-3.7-flash,gemini-3.8-flash
+  # Below the container's 512Mi limit, so V8 collects garbage before the
+  # kernel OOM-kills the pod.
+  NODE_OPTIONS: --max-old-space-size=384

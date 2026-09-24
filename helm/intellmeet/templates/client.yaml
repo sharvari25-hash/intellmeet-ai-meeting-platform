@@ -1,0 +1,89 @@
+{{- if .Values.client.enabled }}
+{{- $selector := include "intellmeet.selectorLabels" (dict "ctx" . "component" "client") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "intellmeet.fullname" . }}-client
+  labels:
+    {{- include "intellmeet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: client
+spec:
+  replicas: {{ .Values.client.replicaCount }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "intellmeet.labels" . | nindent 8 }}
+        app.kubernetes.io/component: client
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        runAsUser: 101
+        runAsGroup: 101
+      containers:
+        - name: client
+          image: {{ include "intellmeet.image" .Values.client.image }}
+          imagePullPolicy: {{ .Values.client.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.client.port }}
+          env:
+            # Fallback proxy; the Ingress already routes /api and /socket.io
+            # to the API directly.
+            - name: API_UPSTREAM
+              value: http://{{ include "intellmeet.fullname" . }}-server:{{ .Values.server.port }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.client.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            # Writable paths for a read-only root: the config rendered from
+            # the template at start-up, and nginx's pid file and buffers.
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "intellmeet.fullname" . }}-client
+  labels:
+    {{- include "intellmeet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: client
+spec:
+  type: ClusterIP
+  selector:
+    {{- $selector | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.client.port }}
+      targetPort: http
+{{- end }}

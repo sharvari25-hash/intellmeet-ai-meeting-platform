@@ -1,0 +1,53 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullname := include "intellmeet.fullname" . }}
+# /api and /socket.io go to the API, everything else to the client: one
+# origin, as in production (Vercel rewrite + direct socket to Render).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "intellmeet.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    # Without a host the rule matches any host name (localhost on kind).
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-server
+                port:
+                  name: http
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-server
+                port:
+                  name: http
+          {{- if .Values.client.enabled }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-client
+                port:
+                  name: http
+          {{- end }}
+      {{- with .Values.ingress.host }}
+      host: {{ . | quote }}
+      {{- end }}
+{{- end }}

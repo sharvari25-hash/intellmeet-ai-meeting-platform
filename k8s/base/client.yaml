@@ -1,0 +1,103 @@
+# The web client: the Vite build served by unprivileged nginx on port 8080.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intellmeet-client
+  namespace: intellmeet
+  labels:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/component: client
+    app.kubernetes.io/part-of: intellmeet
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: intellmeet
+      app.kubernetes.io/component: client
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: intellmeet
+        app.kubernetes.io/component: client
+        app.kubernetes.io/part-of: intellmeet
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # `nginx` in the nginx-unprivileged image.
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: client
+          image: ghcr.io/sharvari25-hash/intellmeet-client:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # The Ingress sends /api and /socket.io straight to the API, so
+            # this proxy is only a fallback; it lets the image also work on
+            # its own. A Service name resolves even before its pods are up,
+            # so nginx always starts.
+            - name: API_UPSTREAM
+              value: http://intellmeet-server:5000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+          volumeMounts:
+            # The only writable paths: the rendered config (from the template
+            # at start-up), and nginx's pid file and body buffers.
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intellmeet-client
+  namespace: intellmeet
+  labels:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/component: client
+    app.kubernetes.io/part-of: intellmeet
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/component: client
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

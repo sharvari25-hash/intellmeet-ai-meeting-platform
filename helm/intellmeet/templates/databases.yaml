@@ -1,0 +1,94 @@
+{{- if .Values.localDatabases.enabled }}
+{{- /*
+LOCAL ONLY (localDatabases.enabled): a throwaway MongoDB and Redis, one
+replica each, emptyDir storage, no authentication. Production points
+MONGODB_URI and REDIS_URL at Atlas and Upstash / Render Key Value instead.
+Both run as their images' own non-root user (999), so the pods pass the
+"restricted" Pod Security Standard like the application's.
+*/ -}}
+{{- $fullname := include "intellmeet.fullname" . }}
+{{- range $db := list "mongo" "redis" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $db }}
+  labels:
+    {{- include "intellmeet.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $db }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "intellmeet.selectorLabels" (dict "ctx" $ "component" $db) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "intellmeet.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $db }}
+    spec:
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: {{ $db }}
+          {{- if eq $db "mongo" }}
+          image: {{ $.Values.localDatabases.mongo.image }}
+          ports:
+            - name: db
+              containerPort: 27017
+          readinessProbe:
+            exec:
+              command: ['mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          {{- else }}
+          image: {{ $.Values.localDatabases.redis.image }}
+          # noeviction: BullMQ keeps queued jobs in Redis.
+          args: ['redis-server', '--maxmemory-policy', 'noeviction']
+          ports:
+            - name: db
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ['redis-cli', 'ping']
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-{{ $db }}
+  labels:
+    {{- include "intellmeet.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $db }}
+spec:
+  selector:
+    {{- include "intellmeet.selectorLabels" (dict "ctx" $ "component" $db) | nindent 4 }}
+  ports:
+    - name: db
+      port: {{ if eq $db "mongo" }}27017{{ else }}6379{{ end }}
+      targetPort: db
+{{- end }}
+{{- end }}

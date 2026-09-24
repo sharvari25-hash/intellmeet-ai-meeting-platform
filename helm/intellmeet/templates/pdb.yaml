@@ -1,0 +1,15 @@
+{{- if .Values.server.podDisruptionBudget.enabled }}
+# Keeps at least one API pod running while nodes are drained for upgrades.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "intellmeet.fullname" . }}-server
+  labels:
+    {{- include "intellmeet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: {{ .Values.server.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "intellmeet.selectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+{{- end }}

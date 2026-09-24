@@ -1,0 +1,42 @@
+# A self-contained install on kind (docs/kubernetes.md):
+#
+#   helm upgrade --install intellmeet helm/intellmeet -n intellmeet --create-namespace \
+#     -f helm/intellmeet/values-local.yaml \
+#     --set-string secrets.values.JWT_SECRET=$(openssl rand -hex 32)
+#
+# In-cluster MongoDB and Redis, images built on this machine, one replica of
+# each, and the site at http://localhost:8081.
+
+config:
+  CORS_ORIGINS: http://localhost:8081
+  CLIENT_URL: http://localhost:8081
+
+# MONGODB_URI and REDIS_URL default to the release's own local databases.
+# JWT_SECRET is required and deliberately not here: pass it with --set.
+secrets:
+  create: true
+
+server:
+  image:
+    repository: intellmeet-server
+    tag: local
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+  podDisruptionBudget:
+    enabled: false
+
+client:
+  image:
+    repository: intellmeet-client
+    tag: local
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+
+ingress:
+  host: ''
+
+localDatabases:
+  enabled: true

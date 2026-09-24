@@ -1,0 +1,19 @@
+apiVersion: v2
+name: intellmeet
+description: >-
+  IntellMeet - AI-powered meetings: the Express + Socket.io API (with its
+  BullMQ AI worker) and the React client, for Kubernetes. Production runs on
+  Vercel + Render; this chart is the scalable path.
+type: application
+# The chart's own version; bump it when a template or default changes.
+version: 0.1.0
+# The application version it was written against.
+appVersion: '0.1.0'
+kubeVersion: '>=1.27.0-0'
+keywords:
+  - meetings
+  - webrtc
+  - socket.io
+home: https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform
+sources:
+  - https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform

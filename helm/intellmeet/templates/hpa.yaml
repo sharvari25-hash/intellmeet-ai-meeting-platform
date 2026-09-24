@@ -1,0 +1,31 @@
+{{- if .Values.server.autoscaling.enabled }}
+# Scales the API on CPU (needs metrics-server). Socket.io broadcasts go
+# through the Redis adapter, so pods are interchangeable apart from the
+# socket each holds, which the Ingress keeps sticky.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "intellmeet.fullname" . }}-server
+  labels:
+    {{- include "intellmeet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "intellmeet.fullname" . }}-server
+  minReplicas: {{ .Values.server.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.server.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.server.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      # Removing a pod drops its sockets (clients reconnect elsewhere), so
+      # only scale down once load has stayed low for five minutes.
+      stabilizationWindowSeconds: 300
+{{- end }}

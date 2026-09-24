@@ -1,0 +1,62 @@
+{{- if .Values.worker.enabled }}
+{{- /*
+The AI worker on its own (worker.enabled=true): the same image, running
+dist/scripts/worker.js, which consumes the BullMQ queue and nothing else. No
+Service and no HTTP probes: it serves nothing. BullMQ gives each job to one
+worker, so any number of replicas share the queue.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "intellmeet.fullname" . }}-worker
+  labels:
+    {{- include "intellmeet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "intellmeet.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "intellmeet.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        {{- include "intellmeet.configChecksums" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      # The worker lets its running job finish on SIGTERM (worker.close()).
+      # A transcription can take minutes; a job cut off is retried by BullMQ.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: {{ include "intellmeet.image" .Values.server.image }}
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          command: ['node', 'dist/scripts/worker.js']
+          {{- include "intellmeet.serverEnv" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: recordings
+              mountPath: /app/server/.data
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: recordings
+          emptyDir: {}
+{{- end }}
