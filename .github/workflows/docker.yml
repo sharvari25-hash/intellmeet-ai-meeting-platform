@@ -1,0 +1,87 @@
+# Container images.
+#
+#   push to main       build both images and push them to GHCR:
+#                      ghcr.io/<owner>/intellmeet-server and -client, tagged
+#                      `latest` and `sha-<commit>` (pin the sha tag to deploy
+#                      a known build, and to roll back).
+#   pull request       build both images without pushing, so a broken
+#                      Dockerfile is found before it reaches main - and
+#                      before Render, which builds server/Dockerfile.
+#
+# No secrets to configure: the built-in GITHUB_TOKEN can push to this
+# repository's packages once the job asks for `packages: write`.
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # Only PRs that can change what goes into an image.
+    paths:
+      - 'server/**'
+      - 'client/**'
+      - 'shared/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - '.dockerignore'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: ${{ matrix.image }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [server, client]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags and OCI labels. The org.opencontainers.image.source label links
+      # the package to this repository on GitHub.
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/intellmeet-${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            type=ref,event=pr
+
+      - name: Build${{ github.event_name != 'pull_request' && ' and push' || '' }}
+        uses: docker/build-push-action@v7
+        with:
+          # Both Dockerfiles build from the repository root (they need
+          # shared/ and the root lockfile).
+          context: .
+          file: ${{ matrix.image }}/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache in GitHub's cache service, one scope per image, so an
+          # unchanged dependency layer is not reinstalled on every run.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

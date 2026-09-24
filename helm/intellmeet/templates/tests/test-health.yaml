@@ -1,0 +1,32 @@
+# `helm test <release>`: asks the API's readiness endpoint, through its
+# Service, whether it is up and connected to MongoDB and Redis. Uses the API
+# image itself (Node has fetch built in), so the test pulls nothing new.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "intellmeet.fullname" . }}-test-health
+  labels:
+    {{- include "intellmeet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+    runAsUser: 1000
+    runAsGroup: 1000
+  containers:
+    - name: health
+      image: {{ include "intellmeet.image" .Values.server.image }}
+      imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+      command:
+        - node
+        - -e
+        - >-
+          fetch('http://{{ include "intellmeet.fullname" . }}-server:{{ .Values.server.port }}/api/health/ready')
+          .then(async (r) => { console.log(r.status, await r.text()); process.exit(r.ok ? 0 : 1); })
+          .catch((e) => { console.error(e.message); process.exit(1); })
+      securityContext:
+        {{- toYaml .Values.containerSecurityContext | nindent 8 }}

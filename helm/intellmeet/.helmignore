@@ -1,0 +1,10 @@
+# Files helm package leaves out of the chart archive.
+.DS_Store
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+*.bak
+*.tmp
+*.orig

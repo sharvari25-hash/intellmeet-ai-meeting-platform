@@ -1,0 +1,151 @@
+# Default values for the IntellMeet chart: a production-shaped install that
+# uses an external MongoDB and Redis (Atlas / Upstash) and a Secret you create
+# yourself. values-local.yaml turns this into a self-contained kind install.
+
+nameOverride: ''
+fullnameOverride: ''
+
+# For a private registry. GHCR packages are private until made public in the
+# package's settings; otherwise add a docker-registry Secret here.
+imagePullSecrets: []
+
+# ---------------------------------------------------------------------------
+# Non-secret configuration, rendered into a ConfigMap and injected into the
+# API and worker as environment variables. Every key is documented in
+# server/.env.example and validated at start-up (server/src/config/env.ts).
+# Any variable from that file may be added here.
+config:
+  NODE_ENV: production
+  LOG_LEVEL: info
+  # The public origin of the site (the Ingress host, with its scheme).
+  CORS_ORIGINS: https://intellmeet.example.com
+  CLIENT_URL: https://intellmeet.example.com
+  AI_PROVIDER: mock
+  GEMINI_MODEL: gemini-3.5-flash
+  GEMINI_FALLBACK_MODELS: gemini-3.6-flash,gemini-3.7-flash,gemini-3.8-flash
+
+# ---------------------------------------------------------------------------
+# Secret configuration: JWT_SECRET, MONGODB_URI and REDIS_URL are required;
+# GEMINI_API_KEY, CLOUDINARY_*, TURN_* and GROQ_API_KEY are optional.
+secrets:
+  # false (recommended): reference a Secret created outside Helm, e.g.
+  #   kubectl -n intellmeet create secret generic intellmeet-secrets \
+  #     --from-literal=JWT_SECRET=... --from-literal=MONGODB_URI=... ...
+  # so secret values never live in a values file or in Helm's release record.
+  create: false
+  existingSecret: intellmeet-secrets
+  # Only read when create is true (local clusters). Pass values with --set,
+  # never commit them.
+  values: {}
+
+# ---------------------------------------------------------------------------
+server:
+  image:
+    repository: ghcr.io/sharvari25-hash/intellmeet-server
+    # `latest` follows main. Pin a `sha-<commit>` tag (pushed by the Docker
+    # workflow) for a deploy you can reproduce and roll back.
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 2
+  port: 5000
+  # Heap ceiling below the memory limit, so V8 collects before an OOM kill.
+  nodeOptions: --max-old-space-size=384
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: '1'
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Grace period after SIGTERM; longer than SHUTDOWN_TIMEOUT_MS (10 s).
+  terminationGracePeriodSeconds: 30
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# The AI worker as its own Deployment (the API then sets
+# RUN_WORKER_IN_PROCESS=false). Off by default: each API pod runs a worker,
+# like Render's single free instance. Turn it on to scale transcription
+# (CPU-heavy ffmpeg work and long provider calls) apart from web traffic.
+worker:
+  enabled: false
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: '1'
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+client:
+  enabled: true
+  image:
+    repository: ghcr.io/sharvari25-hash/intellmeet-client
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 2
+  port: 8080
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  # Empty = any host (handy for localhost).
+  host: intellmeet.example.com
+  # For ingress-nginx, which reached end of life on 24 March 2026; it still
+  # runs on kind for local validation. For another controller (Traefik,
+  # HAProxy, F5 NGINX, a Gateway API implementation) replace these with its
+  # equivalents: cookie affinity for /socket.io, a one-hour read timeout and a
+  # 60 MB request body. See docs/kubernetes.md.
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/affinity-mode: persistent
+    nginx.ingress.kubernetes.io/session-cookie-name: intellmeet-route
+    nginx.ingress.kubernetes.io/session-cookie-max-age: '172800'
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Lax
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-body-size: 60m
+  # e.g. [{ secretName: intellmeet-tls, hosts: [intellmeet.example.com] }]
+  tls: []
+
+# ---------------------------------------------------------------------------
+# LOCAL ONLY: a throwaway single-replica MongoDB and Redis in the release,
+# with emptyDir storage and no authentication, for kind/minikube.
+localDatabases:
+  enabled: false
+  mongo:
+    image: mongo:7
+  redis:
+    image: redis:7-alpine
+
+# ---------------------------------------------------------------------------
+# Pod and container security, shaped for the "restricted" Pod Security
+# Standard. The user ids are the images' own unprivileged users.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ['ALL']

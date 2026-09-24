@@ -1,0 +1,61 @@
+# Local overlay for kind:  kubectl apply -k k8s/local
+# The base, plus in-cluster MongoDB and Redis, locally built images, one
+# replica each, and the app at http://localhost:8081 (see kind-config.yaml).
+# The Secret is still created by hand (docs/kubernetes.md), so nothing secret
+# is committed, not even a development one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - databases.yaml
+
+# Images built on this machine and copied in with `kind load docker-image`.
+images:
+  - name: ghcr.io/sharvari25-hash/intellmeet-server
+    newName: intellmeet-server
+    newTag: local
+  - name: ghcr.io/sharvari25-hash/intellmeet-client
+    newName: intellmeet-client
+    newTag: local
+
+patches:
+  # The browser's origin. localhost counts as a secure context, so the
+  # production `Secure` refresh cookie works over plain http here.
+  - target:
+      kind: ConfigMap
+      name: intellmeet-config
+    patch: |-
+      - op: replace
+        path: /data/CORS_ORIGINS
+        value: http://localhost:8081
+      - op: replace
+        path: /data/CLIENT_URL
+        value: http://localhost:8081
+  # Any host name, so http://localhost:8081 matches.
+  - target:
+      kind: Ingress
+      name: intellmeet
+    patch: |-
+      - op: remove
+        path: /spec/rules/0/host
+  # A laptop needs one of each; the images are local, never pulled.
+  - target:
+      kind: Deployment
+      name: intellmeet-(server|client)
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: intellmeet-server
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3

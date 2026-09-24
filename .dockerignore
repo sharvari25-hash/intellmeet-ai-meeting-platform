@@ -1,0 +1,43 @@
+# Build context for both images (server/Dockerfile and client/Dockerfile are
+# built from the repository root, because each depends on `shared/` and the
+# root lockfile).
+#
+# Secrets first: a local .env must never reach an image layer, where anyone
+# who pulls the image can read it. The images get their configuration from
+# the platform (Render, Kubernetes, docker compose) at run time instead.
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+
+# Installed and generated files: the Dockerfiles install and build their own,
+# for Linux, from the lockfile.
+**/node_modules
+**/dist
+**/coverage
+**/.vite
+**/*.tsbuildinfo
+test-results
+playwright-report
+blob-report
+
+# Local recordings (the no-Cloudinary storage path) and caches.
+**/.data
+**/.cache
+
+# Repository and editor metadata, docs and tooling the images never read.
+.git
+.github
+.husky
+.vscode
+.idea
+.claude
+docs
+e2e
+k8s
+helm
+loadtest
+**/*.md
+**/Dockerfile*
+docker-compose*.yml

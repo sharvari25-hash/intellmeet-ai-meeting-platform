@@ -1,0 +1,145 @@
+# The API: Express + Socket.io, with the AI worker in-process.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intellmeet-server
+  namespace: intellmeet
+  labels:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: intellmeet
+spec:
+  # The HPA (hpa.yaml) owns the count from here on; this is the starting point.
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never below the current capacity during a deploy: a new pod must be
+      # ready before an old one goes.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: intellmeet
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: intellmeet
+        app.kubernetes.io/component: server
+        app.kubernetes.io/part-of: intellmeet
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # `node`, the image's unprivileged user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # Longer than SHUTDOWN_TIMEOUT_MS (10s) plus the preStop pause, so the
+      # graceful shutdown in server.ts always finishes before SIGKILL.
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        # Replicas on different nodes when there are several, so losing one
+        # node does not take the API down.
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: intellmeet
+              app.kubernetes.io/component: server
+      containers:
+        - name: server
+          image: ghcr.io/sharvari25-hash/intellmeet-server:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: intellmeet-config
+            - secretRef:
+                name: intellmeet-secrets
+          # The server connects to MongoDB and Redis before it listens, with
+          # retries, so a slow start is normal. Liveness and readiness only
+          # begin once this has passed.
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          # Readiness: 503 while MongoDB or Redis is unreachable, which takes
+          # the pod out of the Service without restarting it.
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Liveness: 200 whenever the process can answer at all. It must not
+          # depend on MongoDB: restarting every pod during a database outage
+          # turns a partial outage into a total one.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            # Endpoints are removed asynchronously; a short pause before
+            # SIGTERM lets the Ingress stop sending new requests first.
+            preStop:
+              exec:
+                command: ['sleep', '5']
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+          volumeMounts:
+            # ffmpeg splits long recordings in the OS temp directory.
+            - name: tmp
+              mountPath: /tmp
+            # Local recordings when Cloudinary is not configured. Per pod and
+            # lost on restart: production sets the Cloudinary variables.
+            - name: recordings
+              mountPath: /app/server/.data
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: recordings
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intellmeet-server
+  namespace: intellmeet
+  labels:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: intellmeet
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http

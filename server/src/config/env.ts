@@ -236,9 +236,11 @@ const envSchema = z.object({
 
   /**
    * `mock` needs no account and returns deterministic output derived from the
-   * transcript, so the whole pipeline runs offline and in tests. `groq` is the
-   * production default; `gemini` is the alternative. With `groq` selected and
-   * a Gemini key also present, Gemini becomes the automatic fallback.
+   * transcript, so the whole pipeline runs offline and in tests. `gemini` is
+   * the production provider (Groq, the plan's first choice, is unreachable
+   * from the development network); `groq` remains supported. With `groq`
+   * selected and a Gemini key also present, Gemini becomes the automatic
+   * fallback.
    */
   AI_PROVIDER: z.enum(AI_PROVIDERS).default('mock'),
 
@@ -247,7 +249,24 @@ const envSchema = z.object({
   GROQ_CHAT_MODEL: z.string().default('llama-3.3-70b-versatile'),
 
   GEMINI_API_KEY: optionalEnvString,
-  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+  /**
+   * A current free-tier Flash model that accepts audio. Not the newest one on
+   * purpose: at Phase 11 the two newest Flash models answered "high demand"
+   * (503) to free-tier keys for minutes at a time, while this one answered.
+   * The 2.5 family is restricted to projects that used it before.
+   */
+  GEMINI_MODEL: z.string().default('gemini-3.5-flash'),
+  /**
+   * Tried in order when GEMINI_MODEL still fails after its in-call retry
+   * (overloaded, out of quota, retired). The free tier allows 20 requests a
+   * day per model (measured at Phase 11), and a recorded meeting takes at
+   * least two, so each model in the chain adds about ten meetings a day; each
+   * also has its own load. Comma-separated; `none` turns the chain off.
+   */
+  GEMINI_FALLBACK_MODELS: z
+    .string()
+    .default('gemini-3.6-flash,gemini-3.7-flash,gemini-3.8-flash')
+    .transform((value) => (value.trim() === 'none' ? [] : toList(value))),
 
   /**
    * Largest audio file sent to the provider in one request. Groq's limit is

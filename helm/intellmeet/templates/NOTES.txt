@@ -1,0 +1,30 @@
+IntellMeet {{ .Chart.AppVersion }} is installed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Watch the pods start (the API waits for MongoDB and Redis before it listens):
+  kubectl -n {{ .Release.Namespace }} get pods -w
+
+{{- if .Values.ingress.enabled }}
+
+Open the site:
+{{- if .Values.ingress.host }}
+  https://{{ .Values.ingress.host }}
+{{- else }}
+  http://localhost:8081   (kind, with k8s/local/kind-config.yaml)
+{{- end }}
+{{- end }}
+
+Check the API from inside the cluster:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if .Values.localDatabases.enabled }}
+
+Seed the demo workspace ("Try Live Demo" needs it):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "intellmeet.fullname" . }}-server -- node dist/scripts/seed.js
+
+The databases in this release are LOCAL ONLY: emptyDir storage, no auth.
+{{- end }}
+{{- if .Values.server.autoscaling.enabled }}
+
+The API autoscales on CPU ({{ .Values.server.autoscaling.minReplicas }}-{{ .Values.server.autoscaling.maxReplicas }} pods), which needs metrics-server:
+  kubectl -n {{ .Release.Namespace }} get hpa
+{{- end }}

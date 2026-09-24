@@ -37,7 +37,7 @@ export default tseslint.config(
 
   // Server + shared run on Node.
   {
-    files: ['server/**/*.ts', 'shared/**/*.ts', '*.js', '*.ts'],
+    files: ['server/**/*.ts', 'shared/**/*.ts', '*.js', '*.ts', '.github/**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node },
     },

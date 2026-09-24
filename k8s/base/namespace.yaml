@@ -1,0 +1,12 @@
+# Everything IntellMeet runs lives in one namespace, so the whole stack can be
+# listed, limited and removed together (`kubectl delete namespace intellmeet`).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: intellmeet
+  labels:
+    app.kubernetes.io/part-of: intellmeet
+    # Pods must meet the "restricted" Pod Security Standard: non-root, no
+    # privilege escalation, all capabilities dropped, RuntimeDefault seccomp.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

@@ -262,10 +262,17 @@ sequenceDiagram
   calls the job body directly. The e2e recording test runs the real BullMQ
   path.
 - **Providers are swappable by configuration.** `AI_PROVIDER=mock | groq |
-  gemini`; Groq plus a Gemini key gives an automatic fallback per call.
-  Prompting, validation and repair are shared by every LLM provider, so they
-  are tested once.
-- **Failure handling.** 429/5xx/network errors retry with exponential backoff.
+  gemini`; production uses Gemini (Phase 11): `GEMINI_MODEL`, then each of
+  `GEMINI_FALLBACK_MODELS` (the free tier's 20 requests a day are per
+  model, so a chain multiplies them), and Groq plus a Gemini key gives a
+  fallback per call too. Prompting, validation and repair are shared by every LLM
+  provider, so they are tested once.
+- **Failure handling, in three layers.** A 429/5xx is first retried once
+  inside the call (3 s, or the vendor's own `Retry-After`/`retryDelay` up to
+  20 s; a longer ask means out of quota, so it fails at once); then the next
+  model or provider takes over (between models, not for a 400 or 401, which
+  every model would repeat); then the job itself retries with exponential
+  backoff, network errors included.
   Permanent errors (deleted meeting, missing file, rejected key) stop at once.
   The final failure stores a UI-safe message built from status codes, never
   from provider responses.
@@ -686,3 +693,30 @@ the categorical slots were checked for colour-blind separation and contrast
 against the card in both themes; "done/overdue" use status colours with an
 icon and a label; the chart CSS variables are stepped separately for dark
 mode. Animation is off under `prefers-reduced-motion`.
+
+---
+
+## Deployment topology (Phase 11)
+
+**Production runs on Vercel and Render.** The same two images also run
+under Docker Compose and on Kubernetes, which is the path for when one
+instance is not enough.
+
+```
+Production (free tiers)                       Scalable path (k8s/, helm/intellmeet)
+──────────────────────────                    ─────────────────────────────────────
+Vercel ── static client                       Ingress ─ /          → client pods (nginx)
+   └─ rewrite /api/* ──► Render               Ingress ─ /api       → API pods (HPA 2-6)
+browser ── Socket.io ───► Render              Ingress ─ /socket.io → API pods (sticky)
+Render: one container from                    API pods ─ Redis adapter, BullMQ, rate limits
+  server/Dockerfile, worker in-process        optional worker Deployment (worker.enabled)
+MongoDB Atlas, Upstash Redis                  MongoDB / Redis: managed, or local-only pods
+```
+
+What makes the API scale out without code changes was decided in earlier
+phases: Socket.io broadcasts go through the Redis adapter (Phase 3), rate
+limits, presence and room state live in Redis, BullMQ gives each AI job to one
+worker (Phase 6), and every housekeeping job is idempotent (Phase 8). The
+only per-pod state is each open socket, which is why the Ingress uses cookie
+affinity for `/socket.io`. `docs/devops.md` covers the images and CI;
+`docs/kubernetes.md` the manifests, the chart and how they were validated.

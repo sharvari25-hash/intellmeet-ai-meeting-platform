@@ -1,0 +1,68 @@
+# One public host, three routes - the same split production gets from Vercel
+# (static + /api rewrite) and Render (Socket.io):
+#
+#   /api        -> API    (REST, including 50 MB recording uploads)
+#   /socket.io  -> API    (WebSocket, sticky)
+#   /           -> client (nginx)
+#
+# The annotations are for the ingress-nginx controller, which the Kubernetes
+# project retired on 24 March 2026 (no further fixes). It still installs on
+# kind for local validation. For a real cluster use a maintained controller:
+# the Ingress resource itself is unchanged, only the class and annotations
+# differ (the Helm chart takes both as values), or migrate to the Gateway API
+# with ingress2gateway. See docs/kubernetes.md.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: intellmeet
+  namespace: intellmeet
+  labels:
+    app.kubernetes.io/name: intellmeet
+    app.kubernetes.io/part-of: intellmeet
+  annotations:
+    # Sticky sessions. Socket.io opens with a WebSocket, but falls back to
+    # HTTP long-polling, whose requests must all reach the pod that holds
+    # that session; a cookie pins a browser to one API pod.
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/affinity-mode: persistent
+    nginx.ingress.kubernetes.io/session-cookie-name: intellmeet-route
+    nginx.ingress.kubernetes.io/session-cookie-max-age: '172800'
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Lax
+    # WebSockets: ingress-nginx upgrades them by itself; the default 60 s
+    # read timeout would cut a quiet meeting's socket, so allow an hour.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '3600'
+    # Recording uploads when Cloudinary is not configured (MAX_RECORDING_MB).
+    nginx.ingress.kubernetes.io/proxy-body-size: 60m
+spec:
+  ingressClassName: nginx
+  # TLS in a real cluster (e.g. cert-manager); the refresh cookie is `Secure`
+  # in production, so the site must be served over HTTPS.
+  # tls:
+  #   - hosts: [intellmeet.example.com]
+  #     secretName: intellmeet-tls
+  rules:
+    - host: intellmeet.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: intellmeet-server
+                port:
+                  name: http
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: intellmeet-server
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: intellmeet-client
+                port:
+                  name: http
