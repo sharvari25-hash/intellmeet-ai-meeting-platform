@@ -59,8 +59,16 @@ export type UpdateMeetingInput = z.infer<typeof updateMeetingSchema>;
 
 export const listMeetingsQuerySchema = z.object({
   teamId: objectIdSchema.optional(),
+  /**
+   * `scheduled` is "upcoming", `ended` is "past". Each status also sets the
+   * order: upcoming soonest first, live and past most recent first.
+   */
   status: meetingStatusSchema.optional(),
-  /** Free-text search across titles, backed by a Mongo text index. */
+  /**
+   * Free-text search across titles and descriptions, AI summaries and
+   * decisions, and transcripts - the three Mongo text indexes. Results are
+   * ranked by relevance instead of date.
+   */
   q: z.string().trim().max(140).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -106,8 +114,46 @@ export const meetingSchema = z.object({
 });
 export type Meeting = z.infer<typeof meetingSchema>;
 
+/** Where in a meeting a search term was found, most informative first. */
+export const MEETING_SEARCH_SOURCES = [
+  'summary',
+  'decision',
+  'transcript',
+  'description',
+  'title',
+] as const;
+
+/** Why a meeting is in the search results: the sentence that matched. */
+export const meetingSearchMatchSchema = z.object({
+  source: z.enum(MEETING_SEARCH_SOURCES),
+  /** The matching sentence or transcript line, trimmed to fit a result row. */
+  snippet: z.string(),
+  /** Seconds into the meeting, when the match is a transcript line. */
+  offsetSec: z.number().nonnegative().nullable(),
+});
+export type MeetingSearchMatch = z.infer<typeof meetingSearchMatchSchema>;
+
+/** Enough of the AI output to tell past meetings apart in a list. */
+export const meetingPreviewSchema = z.object({
+  /** The summary, shortened on a word boundary. */
+  summary: z.string(),
+  keyDecisionCount: z.number().int().nonnegative(),
+  actionItemCount: z.number().int().nonnegative(),
+  openActionItemCount: z.number().int().nonnegative(),
+});
+export type MeetingPreview = z.infer<typeof meetingPreviewSchema>;
+
+/** A row of the meeting history: the meeting, plus what the list shows about it. */
+export const meetingListItemSchema = meetingSchema.extend({
+  /** Null until the meeting has an AI summary. */
+  preview: meetingPreviewSchema.nullable(),
+  /** Set only on search results. */
+  match: meetingSearchMatchSchema.nullable(),
+});
+export type MeetingListItem = z.infer<typeof meetingListItemSchema>;
+
 export const meetingListSchema = z.object({
-  meetings: z.array(meetingSchema),
+  meetings: z.array(meetingListItemSchema),
   total: z.number().int().nonnegative(),
   page: z.number().int().positive(),
   limit: z.number().int().positive(),
