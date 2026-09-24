@@ -41,6 +41,9 @@ const TeamDetailPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('@/features/settings/SettingsPage').then((module) => ({ default: module.SettingsPage })),
 );
+const MeetingsPage = lazy(() =>
+  import('@/features/meetings/MeetingsPage').then((module) => ({ default: module.MeetingsPage })),
+);
 const MeetingDetailPage = lazy(() =>
   import('@/features/meetings/MeetingDetailPage').then((module) => ({
     default: module.MeetingDetailPage,
@@ -97,14 +100,7 @@ export default function App() {
           <Route path="teams/:teamId" element={<TeamDetailPage />} />
           <Route path="settings" element={<SettingsPage />} />
 
-          <Route
-            path="meetings"
-            element={
-              <ComingSoon title="Meeting history" phase="Phase 7">
-                Transcripts, summaries and decisions from every past meeting, searchable.
-              </ComingSoon>
-            }
-          />
+          <Route path="meetings" element={<MeetingsPage />} />
           <Route path="meetings/:meetingId" element={<MeetingDetailPage />} />
           <Route path="room/:roomCode" element={<RoomPage />} />
           <Route
