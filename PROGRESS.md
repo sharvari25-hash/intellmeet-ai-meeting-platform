@@ -5,6 +5,288 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 11 — Docker, Kubernetes, Helm, CI/CD ✅
+
+**Completed:** 2026-09-24. Done before Phase 10 (quality pass), and followed
+by Phase 12 (deployment), so the live demo is online early.
+
+### Before Phase 11: the branch was missing Phase 9
+
+`feat/phase-11-devops` had been created from a local `main` that was never
+pulled after PR #9 merged, so it stopped at the Phase 8 merge (`f95fee4`)
+while GitHub's `main` was at `f2e6ee6`. With approval, both were
+fast-forwarded (`git fetch`, `git merge --ff-only`, no new commits). The
+installed packages already matched the Phase 9 lockfile (`npm ls` clean), so
+no install was needed.
+
+### Built
+
+- **`server/Dockerfile`**, the image Render builds in Phase 12: Node 22
+  Alpine, four stages (deps → build → fresh production install → runtime),
+  non-root (`node`), `HEALTHCHECK` on `/api/health` with Node's `fetch`,
+  `RUN_WORKER_IN_PROCESS=true`, `npm ci --ignore-scripts`, and a build step
+  that fails if the bundled ffmpeg cannot run. 124 MB of dependencies, 66 MB
+  of it ffmpeg; no dev tooling in the image (checked).
+- **`client/Dockerfile`** + **`client/nginx/default.conf.template`**: the
+  Vite build on unprivileged nginx (uid 101, port 8080), SPA fallback,
+  one-year cache for hashed assets, `no-cache` for the shell, security
+  headers, and a same-origin proxy for `/api` and `/socket.io` (WebSocket
+  upgrade included). 85 MB.
+- **`.dockerignore`**: every `.env` (but `.env.example`), keys, build output,
+  recordings, docs and tests stay out of the build context.
+- **`docker-compose.prod.yml`**: MongoDB, Redis, API and client from the
+  images, as project `intellmeet-prod`, only port 8080 published, so it runs
+  beside `npm run dev`.
+- **`k8s/`**: `base/` (namespace with the "restricted" Pod Security Standard,
+  ConfigMap, API and client Deployments and Services, HPA at 70% CPU, Ingress
+  with WebSocket timeouts and sticky sessions), `local/` (kind overlay with
+  in-cluster MongoDB and Redis), `secret.example.yaml` (placeholders only).
+- **`helm/intellmeet/`**: the same stack as a chart, plus a
+  PodDisruptionBudget, an optional separate AI worker Deployment
+  (`worker.enabled`), config checksums that roll pods on a config change, a
+  `helm test` pod, and `values-local.yaml` for kind.
+- **`.github/workflows/ci.yml`**: on every PR and push to main, in parallel:
+  *checks* (install → build shared → lint → Prettier → typecheck → server and
+  client tests with coverage → build → coverage table in the job summary and
+  reports as an artifact) and *e2e* (Playwright against MongoDB and Redis
+  service containers, the production build, bundled headless Chromium).
+- **`.github/workflows/docker.yml`**: both images built on PRs that touch
+  them, and built and pushed to GHCR on main as `latest` and `sha-<commit>`,
+  with a GitHub Actions layer cache.
+- **Badges** in the README; **`docs/devops.md`** (images, Compose, CI, which
+  GitHub settings matter) and **`docs/kubernetes.md`** (manifests, chart,
+  validation, running on kind); a deployment-topology section in
+  `docs/architecture.md`.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Alpine, not Debian slim** | Nothing native needs glibc (bcryptjs was chosen in Phase 2 for this), and the ffmpeg binary from `@ffmpeg-installer/linux-x64` is statically linked, so it runs on musl (the build proves it). |
+| **`npm ci --ignore-scripts` in images and CI** | No third-party install script runs at build time, the same policy npm 12 applies on the development machine. Checked what is lost: the ffmpeg package's only script is `chmod u+x ffmpeg`, and its tarball already ships the binary as 0755; esbuild, Rollup, Tailwind and LightningCSS take native binaries from per-platform packages in the lockfile (all present for linux-musl); mongodb-memory-server downloads its mongod on first use. |
+| **A fresh production install instead of `npm prune`** | Nothing from the build stage reaches the runtime image but `dist/`. |
+| **Read-only root filesystem** | The API writes only `/tmp` (ffmpeg) and `server/.data` (local recordings). Verified by running the image with `--read-only --tmpfs /tmp --cap-drop ALL`; the Kubernetes pods run the same way. |
+| **The client image proxies `/api` and `/socket.io`** | One origin, as behind the Vercel rewrite, so the refresh cookie stays first-party and `VITE_SOCKET_URL` can be empty in the image. `client/.env` is excluded from the context, so `localhost:5000` can never be baked in (checked in the bundle). |
+| **Readiness `/api/health/ready`, liveness `/api/health`, a startup probe** | The Phase 1 split used as intended: a database outage takes pods out of rotation without restarting them all. The startup probe covers the MongoDB/Redis connection retries before the server listens. |
+| **Sticky sessions for Socket.io, HPA on CPU** | The Redis adapter already broadcasts across pods; only the long-polling fallback needs a pod per session. |
+| **Ingress kept, ingress-nginx annotations as values** | The plan asks for an Ingress. ingress-nginx reached end of life on 24 March 2026; it still runs on kind, and the chart takes the class and annotations as values for a maintained controller or a Gateway API migration (documented). |
+| **Secrets outside Helm by default** | `secrets.existingSecret`; values never sit in a values file or Helm's release history. |
+| **e2e in CI: yes, on every PR** | The only tests of the mesh, live boards, the real queue and the analytics over seeded data. Parallel to the checks, one retry with "flaky" reported, artifacts uploaded. Rehearsed on 2 CPUs (below) and adapted to them. |
+| **CI serves the production build to Playwright** | See "Rehearsing CI" below: with the dev servers, 2 CPUs starved the WebRTC specs. |
+| **A coverage gate on the server** | `test:coverage` fails below 90 / 80 / 90 / 90 % (statements / branches / functions / lines), a few points under today's numbers. The plan's floor is 50%. The client's coverage is reported, not gated. |
+| **Test ceilings raised** | Vitest `testTimeout` 15 s (client and server), Testing Library `asyncUtilTimeout` 5 s. Under coverage some page tests take 3-4 s on an idle laptop; the old 5 s and 1 s ceilings failed 4-11 tests whenever the machine was busy. A ceiling does not slow a passing test. |
+| **PR image builds, path-filtered** | A broken Dockerfile is found before main (and before Render builds it); PRs that change nothing an image contains skip it, to save a private repository's Actions minutes. |
+
+### Rehearsing CI before it exists
+
+The workflows cannot run until the PR is open, so both jobs were replayed
+step for step in the runner's environment: Ubuntu 24.04 (Playwright's
+`v1.63.0-noble` image with Node 22 from the official image), **2 CPUs and
+7 GB** (a private repository's runner), MongoDB and Redis as sibling
+containers, from exactly the files a checkout contains (`git ls-files`).
+
+| Job, step | Result (2 CPUs) |
+| --- | --- |
+| checks: install, lint, Prettier, typecheck | ✅ |
+| checks: server tests + coverage | ✅ 494/494, 94.5 / 85.0 / 95.2 / 94.5 %, 9 min (mongod on Ubuntu 24.04 works) |
+| checks: client tests + coverage | ✅ 188/188, 75.5 / 82.7 / 73.5 / 75.5 % |
+| checks: build, coverage table | ✅ (whole job ≈ 30 min: time limit raised from 25 to 45) |
+| e2e, first design (dev servers, full Chromium) | ❌ 5 passed, 2 failed, 1 flaky, 15.7 min: the camera took over 15 s to start in the two-browser specs |
+| e2e, final design (production build, headless shell) | ✅ 6 passed, 2 flaky (passed on retry), 0 failed, 6.0 min |
+
+`actionlint` found nothing in either workflow.
+
+### The Gemini integration
+
+Groq is blocked on the development network ("Access denied. Please check your
+network settings"), so **Gemini is the production provider**. The key in
+`server/.env` was only ever checked for being non-empty; it is never printed,
+logged or written anywhere else.
+
+**What was checked and changed**
+
+| Finding | Change |
+| --- | --- |
+| The key works from here: listing models answers 200 (no region block) and shows the 3.x Flash family. | - |
+| `GEMINI_MODEL` defaulted to `gemini-2.5-flash`. Google now limits the 2.5 family to projects that used it before, so a new key cannot rely on it. The two newest Flash models (3.8, 3.7) answered "high demand" (503) for minutes at a time. | Default **`gemini-3.5-flash`**, with **`GEMINI_FALLBACK_MODELS=gemini-3.6-flash,gemini-3.7-flash,gemini-3.8-flash`**. |
+| **The free tier allows 20 requests a day per model**, failed requests included (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`, quota value 20, from the 429's own details). A recorded meeting needs at least 2 (transcribe, analyse), so one model is about 10 meetings a day for everyone. | The fallback chain: four models, four allowances, about 40 meetings a day. The chain moves on only for failures another model could fix (429, 5xx, 403/404, network, invalid output twice), never for a 400 or 401. |
+| Transient 503/429 failed the whole AI call, and the queue then redid the whole job, transcription included. | One in-call retry for 429/5xx (3 s, or Google's own `retryDelay` if under 20 s; a longer ask means out of quota, so it moves on at once). Only one, because every attempt spends the daily allowance. |
+| Google's Gemini 3 guidance: keep temperature at the default 1.0; lower values can make the model loop (a transcript repeating one sentence). We sent 0 and 0.2. | No temperature is sent. |
+| The browser records `audio/webm;codecs=opus` (Safari: `audio/mp4`). Gemini now lists WebM and Opus as supported, but by its own names. | MIME parameters are dropped and `audio/mp4` is declared as `audio/m4a`. |
+| The transcription JSON was read strictly: `"start": "01:15"` or a Markdown fence would fail the whole job. | Timestamps in seconds or clock form, a fenced reply, or a bare segment list are all accepted; anything else is still a retryable error. |
+| The provider name was just `gemini`. | `gemini:<model>`, so each transcript and summary records the model that wrote it (shown on the meeting page as "Generated by AI (gemini:gemini-3.5-flash)"). |
+
+Tests: 17 new unit tests (MIME names, no temperature, clock timestamps and
+fences, the in-call retry and its limits, the chain's order, dedupe and when
+it stops). The suites never reach the network.
+
+**Evaluation (`npm run eval:ai -w @intellmeet/server -- --provider gemini`)**
+
+**Not measured at Phase 11: Gemini's free tier refused every analysis
+request for over an hour.** From 15:42 to 16:51 UTC on 2026-09-24, every
+attempt on `gemini-3.5-flash`, `3.6-flash`, `3.7-flash` and `3.8-flash`
+answered:
+
+```
+HTTP 503 {"error":{"code":503,"message":"This model is currently experiencing high demand.
+Spikes in demand are usually temporary. Please try again later.","status":"UNAVAILABLE"}}
+```
+
+Seven eval runs (the whole chain, or one fixture) got no analysis back.
+Diagnosis, so the result is not mistaken for a bug:
+
+- **Not a region block or a bad key:** listing models answered 200, and tiny
+  prompts ("Reply with the single word: ok") sometimes answered (200 in 3.6 s
+  on 3.5-flash, 7.9 s and 25 s on 3.6-flash) in the same hour.
+- **Not the request's shape:** the exact analysis request replayed directly
+  failed the same way with JSON mode, without it, as one message, and with a
+  low thinking level. System instruction alone and JSON mode alone both
+  worked on a tiny prompt. `gemini-3.5-flash-lite` did not answer at all
+  within 5 minutes.
+- **The quota:** after about 25 requests (almost all of them 503s and their
+  retries), 3.5-flash answered `429 RESOURCE_EXHAUSTED` with
+  `GenerateRequestsPerDayPerProjectPerModel-FreeTier`, **quota value 20**,
+  `retryDelay 57s`. Failed requests count. This is what led to the single
+  in-call retry and the chain of four models above.
+
+What the code did under that load is itself a result: every refusal was
+retried once, handed to the next model, and finally reported as a retryable
+`ProviderError` with the vendor's message and no key. The eval baseline
+stays the mock's **73%** (8/11 action items fully correct) until the run
+below is repeated.
+
+To measure it (quotas reset at midnight Pacific time, 12:30 IST):
+
+```powershell
+# in server/.env: AI_PROVIDER=gemini   (then back to mock afterwards)
+npm run eval:ai -w @intellmeet/server -- --provider gemini
+```
+
+It prints each meeting's summary, decisions and action items beside the
+reference, and "Action items fully correct (found + owner + deadline): x/11".
+The target is 85%. It costs 3-6 requests (one analysis per meeting, plus a
+repair if the JSON is invalid).
+
+**One real pipeline run through the API**
+
+Prepared and proven with the mock, not yet run on Gemini (same outage). The
+harness drives the production server image (`intellmeet-server:local`)
+through the public API only: three seeded people sign in, start a meeting,
+two join its room over Socket.io (so there are attendees to assign work to),
+the host uploads a recording, ends the meeting, and the harness polls
+`/intelligence` until done or failed, then deletes the meeting. The recording
+is a **real browser recording**: a 51.6 s two-voice meeting spoken by Windows
+text-to-speech (owners, "by Friday", "by Monday", a decision), played into
+Chrome as its microphone and recorded by `MediaRecorder` exactly as the app
+records (Web Audio mix, `audio/webm;codecs=opus`, 32 kbps, 10 s slices): 156
+KB of WebM with no duration header, as every browser recording has.
+
+- **With the mock provider** (to prove the harness): `summarizing → done` in
+  2.4 s, all three people counted as attendees, both owners matched.
+- **With Gemini** (16:54 UTC, capped at 2 requests: `gemini-3.8-flash` only,
+  `AI_JOB_ATTEMPTS=1`): upload accepted, `transcribing → failed` in 8.6 s.
+  The container log shows the WebM sent to Gemini, `503 UNAVAILABLE "This
+  model is currently experiencing high demand"`, one retry 3 s later, the
+  same 503; the meeting got `aiError: "The AI service could not process the
+  recording (HTTP 503). Try again."`, which the page shows with the host's
+  Retry button. The pipeline and its failure path work end to end on the
+  production image; **Gemini's reading of a WebM recording is still
+  unverified live** (a 503 is a capacity refusal, not a format verdict;
+  Google's documentation lists `audio/webm`).
+
+**How to test a real recording yourself** (after the quota resets, with
+`AI_PROVIDER=gemini` in `server/.env` and the API restarted; mock again
+afterwards):
+
+1. `npm run dev`, open <http://localhost:5173>, **Try Live Demo**. In a
+   private window, **Sign in** as `ada@intellmeet.app` / `DemoPassword123`.
+2. Window 1: **New meeting** → *IntellMeet Demo Team* → **Start now** →
+   **Join meeting**; open the invite link in window 2 and join, so Ada is an
+   attendee.
+3. Window 1: **Record**, and read this aloud clearly (about 40 s). Say your
+   guest's first name (from the account menu, e.g. "Amber") where it says
+   *<you>*: transcripts do not know who is speaking, so owners must be named.
+   > "Quick release sync. Ada, can you update the release notes by Friday?
+   > Yes, I'll update the release notes by Friday. *<you>*, please email the
+   > customers about the new date by Monday. OK, *<you>* will email them by
+   > Monday. We've decided to ship version two point one next Tuesday,
+   > without the Outlook integration."
+4. **Stop recording**, **End for all**, **Summary and action items**. Within
+   a minute the status goes *Transcribing → Writing the summary → done*.
+5. Check: the **Transcript** is what you said, with rising timestamps; the
+   **Summary** mentions the release and Outlook; **Key decisions** has "ship
+   2.1 next Tuesday without Outlook"; **Action items** has two, *update the
+   release notes* owned by **Ada Lovelace** due the coming **Friday**, and
+   *email the customers* owned by **you** due the following **Monday**, both
+   without the "not an attendee" flag; the note under the summary says
+   "Generated by AI (gemini:gemini-3.5-flash)" (or a later model in the
+   chain if the first was busy).
+6. If it fails, the page shows the reason and **Retry**; `HTTP 429` means the
+   day's quota is spent, `HTTP 503` that Google is overloaded.
+
+Each such recording costs 2-3 of the day's requests.
+
+### Known limitations
+
+- **Gemini's accuracy is not measured yet** (see above). The mock's 73% is
+  the only number; the eval must be re-run when the free tier has capacity.
+- **Free-tier AI capacity is small and unreliable.** 20 requests a day per
+  model, failed ones included; with the four-model chain about 40 recorded
+  meetings a day across all users, and on a bad hour none. Enabling billing
+  on the Google project (paid tier) is the real fix for a busy demo day.
+- **Kubernetes was validated statically** (helm lint, helm template,
+  kubeconform, kustomize), not on a running cluster: kind is not installed
+  here. `docs/kubernetes.md` has the commands; nothing depends on it for
+  production.
+- **ingress-nginx is end-of-life** (24 March 2026). Its annotations remain
+  as the chart's defaults for kind; a real cluster needs another controller
+  or the Gateway API.
+- **CI has not run on GitHub yet**; it was rehearsed on an equivalent runner
+  (above). The e2e job had two flaky tests there, both passing on retry.
+- **CI minutes**: a push to a PR costs about 30 (checks) + 15 (e2e) + 2 × 6
+  (images) runner minutes; the free plan's 2,000 a month is about 35 pushes.
+  `docs/devops.md` says how to narrow the e2e job if that becomes tight.
+- **GHCR images are private** like the repository; a cluster needs a pull
+  secret (or the packages made public).
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run format:check` | ✅ (Helm templates excluded: they are Go templates) |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **699 passed** (511 server, 188 client; 17 new) |
+| `npm run test:e2e` (mock, local Chrome, dev servers) | ✅ **8 passed** in 3.0 min |
+| Server coverage | ✅ 94.5% statements, 85.0% branches (gate: 90 / 80 / 90 / 90) |
+| Client coverage | 75.5% statements, 82.7% branches (reported) |
+| `docker build` server / client | ✅ 403 MB / 85 MB; ffmpeg runs in the image; no dev dependencies |
+| Server image against local MongoDB + Redis | ✅ `/api/health` 200 (production, mongo up, redis up), `/ready` 200, Docker health `healthy`, uid 1000, read-only root |
+| Client image | ✅ SPA + fallback, security headers, 1-year asset cache, `/api` proxy, WebSocket 101 through nginx |
+| `docker-compose.prod.yml` | ✅ whole stack up, seed from the image, demo sign-in through nginx (`Secure; HttpOnly; SameSite=Lax`), 25 meetings |
+| `helm lint --strict` (Helm 4.3.0, 3.22.0) | ✅ default and local values |
+| `helm template` + kubeconform (strict, k8s 1.33) | ✅ 50 resources in 6 renders, 50 valid |
+| `actionlint` | ✅ 0 findings |
+| CI rehearsal (Ubuntu 24.04, 2 CPUs) | ✅ checks; ✅ e2e 6 passed + 2 flaky |
+| Gemini eval / real pipeline | ⚠️ both reached Gemini; refused with 503 (capacity) and 429 (daily quota of 20) |
+
+`server/.env` is back to `AI_PROVIDER=mock`. Everything the checks created
+(an isolated `intellmeet-docker-check` database, Redis DB 3, containers,
+volumes) was removed; the development database was not touched except by
+the e2e suite, which cleaned up after itself.
+
+### Next phase
+
+**Phase 12 — Deployment:** MongoDB Atlas, Upstash Redis, Cloudinary, Gemini
+and Metered TURN accounts; `render.yaml` building `server/Dockerfile`
+(`AI_PROVIDER=gemini`, `GEMINI_API_KEY`, `RUN_WORKER_IN_PROCESS=true`,
+`NODE_OPTIONS=--max-old-space-size=384`); `client/vercel.json` with the
+`/api` rewrite and SPA fallback; seed production; a keep-alive ping; and a
+production smoke test (demo login, laptop + phone meeting, recording → AI
+summary, a Kanban move). Then Phase 10.
+
+---
+
 ## Phase 9 — Analytics & Insights ✅
 
 **Completed:** 2026-09-24

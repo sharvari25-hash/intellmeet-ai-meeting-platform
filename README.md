@@ -2,7 +2,12 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 9 (analytics) complete. Real WebRTC
+[![CI](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/ci.yml)
+[![Docker](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/docker.yml)
+
+**Status:** 🚧 In development — Phases 0-9 and 11 (Docker, Kubernetes, Helm,
+CI/CD) complete; deployment (Phase 12) is next, the quality pass (Phase 10)
+after it. Real WebRTC
 meetings work end to end; a recorded meeting turns itself into a transcript,
 a summary, key decisions and owned action items; every past meeting is
 searchable, correctable by its host and exportable; action items become tasks
@@ -35,9 +40,12 @@ local recording storage).
 | Database | MongoDB Atlas + Mongoose |
 | Cache / jobs | Redis (ioredis) + BullMQ (post-meeting AI job, worker in-process) |
 | Real-time | Socket.io (+ Redis adapter); WebRTC mesh (perfect negotiation) |
-| AI | Groq (Whisper + Llama 3.3), Gemini fallback, deterministic Mock provider |
+| AI | Google Gemini (3.5 Flash, falling back through 3.6-3.8 Flash) for transcription and analysis; Groq (Whisper + Llama 3.3) supported; deterministic Mock provider |
 | Testing | Vitest, Supertest, React Testing Library, Playwright |
 | Tooling | ESLint 9 (flat config), Prettier, Husky, lint-staged, commitlint |
+| Containers | Multi-stage Docker images (Node 22 Alpine API, unprivileged nginx client), `docker-compose.prod.yml` |
+| Kubernetes | Kustomize manifests + a Helm chart (HPA, sticky Ingress, restricted Pod Security) |
+| CI/CD | GitHub Actions: lint, typecheck, tests with coverage, build and Playwright on every PR; images to GHCR on `main` |
 | Deploy | Vercel (client) + Render (server) — **no AWS** |
 
 ## Prerequisites
@@ -105,7 +113,8 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm run format:check` | Prettier check (used in CI) |
 
 Target a single workspace with `-w`, e.g. `npm run test -w @intellmeet/server`.
-Server coverage: `npm run test:coverage -w @intellmeet/server`.
+Coverage: `npm run test:coverage -w @intellmeet/server` (or `-w
+@intellmeet/client`); CI runs both on every pull request.
 
 ## API overview
 
@@ -277,9 +286,11 @@ runs:
 
 1. **Download.** Anything over the provider's limit is split with ffmpeg into
    10-minute chunks.
-2. **Transcribe** with Whisper (Groq) → a timestamped Transcript.
-3. **Analyse** with Llama → strict JSON `{summary, keyDecisions, actionItems}`,
-   validated with zod, with one repair round trip if the reply is invalid.
+2. **Transcribe** with Gemini (the browser's `audio/webm;codecs=opus` as it
+   is) → a timestamped Transcript.
+3. **Analyse** with Gemini → strict JSON `{summary, keyDecisions,
+   actionItems}`, validated with zod, with one repair round trip if the reply
+   is invalid.
 4. **Match owners** fuzzily to the people who attended ("grace" → Grace
    Hopper; an ambiguous name → no owner rather than the wrong one).
 5. **Save** the insight, push `ai:status` at every step, and notify attendees.
@@ -288,25 +299,37 @@ The meeting page (`/app/meetings/:id`) shows the steps live, then the result.
 Failures retry with exponential backoff; a final failure shows the reason and
 a **Retry** button to the host.
 
-**Works with no accounts.** `AI_PROVIDER=mock` (the default) is deterministic
-and needs no key. Without Cloudinary, recordings are uploaded to the API and
-kept in `server/.data/recordings`. To use the real services, add to
-`server/.env`:
+**Gemini is the production provider** (Groq, the plan's first choice, is
+blocked on the development network; it is still supported). The free tier
+allows **20 requests a day per model**, failed ones included, and a recorded
+meeting needs at least two; its load also comes and goes. So three layers
+stand between a busy model and a failed meeting: each call retries a 429/5xx
+once (3 s, or the pause Google asks for if under 20 s); then the next model in
+`GEMINI_FALLBACK_MODELS` takes over from `GEMINI_MODEL` (`gemini-3.5-flash`,
+then 3.6, 3.7 and 3.8 Flash: four daily allowances, about 40 meetings a day);
+then the job queue retries with exponential backoff. A malformed request or a
+rejected key stops at the first model, since every model would refuse it.
+The stored transcript and summary name the model that wrote them.
+
+**Works with no accounts.** `AI_PROVIDER=mock` (the default, and what the
+test suites use) is deterministic and needs no key. Without Cloudinary,
+recordings are uploaded to the API and kept in `server/.data/recordings`. To
+use the real services, add to `server/.env`:
 
 ```bash
-AI_PROVIDER=groq
-GROQ_API_KEY=…                 # https://console.groq.com/keys
-GEMINI_API_KEY=…               # optional: automatic fallback
+AI_PROVIDER=gemini
+GEMINI_API_KEY=…               # https://aistudio.google.com/apikey (free tier)
 CLOUDINARY_CLOUD_NAME=…        # production: Render's disk is not durable
 CLOUDINARY_API_KEY=…
 CLOUDINARY_API_SECRET=…
 ```
 
 **Measuring accuracy.** `npm run eval:ai -w @intellmeet/server [-- --provider
-groq]` runs the analysis over the sample transcripts in `server/fixtures/` and
-prints every produced decision and action item next to a hand-written
-reference, with owner and deadline checks. The mock gets 73% of action items
-fully correct; that is the floor a real model has to beat.
+gemini]` runs the analysis over the sample transcripts in `server/fixtures/`
+and prints every produced decision and action item next to a hand-written
+reference, with owner and deadline checks (`--fixture <key>` runs one). The
+mock gets 73% of action items fully correct; that is the floor a real model
+has to beat. PROGRESS.md (Phase 11) has Gemini's numbers.
 
 ## Meeting history
 
@@ -503,15 +526,39 @@ Every non-2xx response has the same body, so the client needs one error path:
 it rather than on the message. `requestId` matches the `X-Request-Id` response
 header and the server logs for that request.
 
+## Containers, Kubernetes and CI/CD
+
+**Production is Vercel (client) + Render (API, built from
+`server/Dockerfile`).** The same images also run as a whole stack under Docker
+Compose, and on Kubernetes as the scalable path.
+
+| What | How |
+| --- | --- |
+| **API image** (`server/Dockerfile`) | Node 22 Alpine, multi-stage (deps → build → fresh production install → runtime), non-root, `HEALTHCHECK` on `/api/health`, AI worker in-process (`RUN_WORKER_IN_PROCESS=true`), bundled ffmpeg checked at build time, installs with `--ignore-scripts`. Runs with a read-only root filesystem. |
+| **Client image** (`client/Dockerfile`) | The Vite build on unprivileged nginx, which also proxies `/api` and `/socket.io` (WebSocket included) so the browser sees one origin, as behind the Vercel rewrite. |
+| **Whole stack** | `docker compose --env-file server/.env -f docker-compose.prod.yml up -d --build`, then seed with `docker compose --env-file server/.env -f docker-compose.prod.yml run --rm server node dist/scripts/seed.js`, and open <http://localhost:8080>. |
+| **Kubernetes** | `k8s/base` (Kustomize) and `helm/intellmeet` (chart): readiness on `/api/health/ready`, liveness on `/api/health`, HPA at 70% CPU, sticky WebSocket Ingress, "restricted" Pod Security, an optional separate AI worker. `k8s/local` and `values-local.yaml` run it on kind. |
+| **CI** (`.github/workflows/ci.yml`) | Every PR and push to `main`: lint, Prettier, typecheck, unit tests with coverage, build, and the Playwright suite against MongoDB and Redis service containers. |
+| **Images** (`.github/workflows/docker.yml`) | Push to `main`: both images to GHCR as `latest` and `sha-<commit>`. PRs build them without pushing. |
+
+Details and the reasoning: [`docs/devops.md`](./docs/devops.md) (images,
+Compose, CI, which GitHub settings matter) and
+[`docs/kubernetes.md`](./docs/kubernetes.md) (manifests, chart, validation,
+running on kind).
+
 ## Repository layout
 
 ```
 .
-├── client/     React 19 + Vite web app          → Vercel
-├── server/     Express 5 + Socket.io API        → Render
-├── shared/     zod schemas + types used by both
-├── docs/       architecture, API and report notes
-└── docker-compose.yml   local MongoDB + Redis
+├── client/                 React 19 + Vite web app (+ Dockerfile, nginx config)  → Vercel
+├── server/                 Express 5 + Socket.io API (+ Dockerfile)              → Render
+├── shared/                 zod schemas + types used by both
+├── k8s/                    Kubernetes manifests: base + local (kind) overlay
+├── helm/intellmeet/        Helm chart
+├── .github/workflows/      CI and image builds
+├── docs/                   architecture, DevOps, Kubernetes, API and report notes
+├── docker-compose.yml      local MongoDB + Redis (development)
+└── docker-compose.prod.yml the whole stack from the production images
 ```
 
 ## Environment variables
@@ -554,15 +601,18 @@ npm run prepare   # points git at .husky/
 ## Documentation
 
 - [`PROGRESS.md`](./PROGRESS.md) — running build log: what was done, decisions, limitations
-- `docs/` — architecture diagrams, API reference and report notes (later phases)
+- [`docs/architecture.md`](./docs/architecture.md) — how the pieces work, with diagrams
+- [`docs/devops.md`](./docs/devops.md) — Docker images, Compose, CI/CD
+- [`docs/kubernetes.md`](./docs/kubernetes.md) — manifests, Helm chart, validation, kind
 
 ## Roadmap
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
 Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
 Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban ✅ · Phase 9 analytics ✅ ·
-Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
-observability · Phase 14 docs & demo.
+Phase 11 Docker/K8s/CI ✅ · Phase 12 deploy · Phase 10 quality · Phase 13
+observability · Phase 14 docs & demo (Phase 11 was done before 10, so the
+live demo is online early).
 
 ## License
 
