@@ -13,10 +13,14 @@ import { afterAll, afterEach, beforeAll, inject } from 'vitest';
 process.env.MONGODB_URI = inject('mongoUri');
 
 // Recordings uploaded without Cloudinary go to disk. Tests write theirs to a
-// throwaway directory per worker rather than the developer's `.data/`.
+// throwaway directory per worker rather than the developer's `.data/` - but
+// one that also sits under a dot-directory, like the real default: serving
+// from such a path is refused by Express unless handled, which a tidier test
+// path hid until the Phase 7 player first played a recording back.
 const { tmpdir } = await import('node:os');
 const path = (await import('node:path')).default;
-const recordingsDir = path.join(tmpdir(), `intellmeet-test-recordings-${process.pid}`);
+const testRoot = path.join(tmpdir(), `intellmeet-test-${process.pid}`);
+const recordingsDir = path.join(testRoot, '.data', 'recordings');
 process.env.RECORDINGS_DIR = recordingsDir;
 
 const { connectMongo, disconnectMongo } = await import('../config/db.js');
@@ -57,7 +61,7 @@ afterAll(async () => {
   setRedisClient(null);
   await disconnectMongo();
   const { rm } = await import('node:fs/promises');
-  await rm(recordingsDir, { recursive: true, force: true });
+  await rm(testRoot, { recursive: true, force: true });
 });
 
 export { fakeRedis };
