@@ -1,6 +1,7 @@
 import express, { Router } from 'express';
 import {
   createMeetingSchema,
+  createTasksFromActionItemsSchema,
   idParamsSchema,
   listMeetingsQuerySchema,
   messageHistoryQuerySchema,
@@ -11,12 +12,13 @@ import {
   updateMeetingSchema,
 } from '@intellmeet/shared';
 import { env } from '../../config/env.js';
-import { writeLimiter } from '../../middleware/rateLimit.js';
+import { boardWriteLimiter, writeLimiter } from '../../middleware/rateLimit.js';
 import { requireAuth } from '../../middleware/requireAuth.js';
 import { validate } from '../../middleware/validate.js';
 import * as ai from '../ai/ai.controller.js';
 import * as recordings from '../recordings/recording.controller.js';
 import { isAcceptedRecordingType } from '../recordings/recording.service.js';
+import * as tasks from '../tasks/task.controller.js';
 import * as controller from './meeting.controller.js';
 
 export const meetingRouter: Router = Router();
@@ -109,4 +111,12 @@ meetingRouter.post(
   writeLimiter,
   validate({ params: idParamsSchema }),
   recordings.retry,
+);
+
+/** Action items into Kanban tasks, one or many (Phase 8). Any team member. */
+meetingRouter.post(
+  '/:id/tasks',
+  boardWriteLimiter,
+  validate({ params: idParamsSchema, body: createTasksFromActionItemsSchema }),
+  tasks.fromMeeting,
 );

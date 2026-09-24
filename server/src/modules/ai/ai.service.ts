@@ -10,6 +10,8 @@ import {
 } from '@intellmeet/shared';
 import { AppError } from '../../lib/errors.js';
 import { getMeetingForHost, getMeetingForMember } from '../meetings/meeting.service.js';
+import { Board } from '../tasks/board.model.js';
+import { Task } from '../tasks/task.model.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
 import { MeetingInsight } from './insight.model.js';
@@ -47,22 +49,70 @@ function toTranscriptDto(doc: TranscriptDocument) {
   });
 }
 
-function toInsightDto(doc: StoredInsight) {
+interface LinkedTask {
+  id: string;
+  boardId: string;
+  columnTitle: string;
+  isDone: boolean;
+}
+
+/**
+ * Where each linked task is on its board right now.
+ *
+ * Read live rather than stored on the item, because the task moves on the
+ * board without the meeting knowing. An item whose task has since been deleted
+ * simply has no entry, and shows "Create task" again.
+ */
+async function loadLinkedTasks(insight: StoredInsight | null): Promise<Map<string, LinkedTask>> {
+  const ids = insight?.actionItems.flatMap((item) => (item.taskId ? [item.taskId] : [])) ?? [];
+  if (ids.length === 0) return new Map();
+
+  const tasks = await Task.find({ _id: { $in: ids } }).select('boardId columnId');
+  const boards = await Board.find({
+    _id: { $in: [...new Set(tasks.map((task) => task.boardId.toString()))] },
+  }).select('columns');
+  const columns = new Map(
+    boards.flatMap((board) =>
+      board.columns.map((column) => [column._id.toString(), column] as const),
+    ),
+  );
+
+  return new Map(
+    tasks.map((task) => {
+      const column = columns.get(task.columnId.toString());
+      return [
+        task._id.toString(),
+        {
+          id: task._id.toString(),
+          boardId: task.boardId.toString(),
+          columnTitle: column?.title ?? 'On the board',
+          isDone: column?.isDone ?? false,
+        },
+      ];
+    }),
+  );
+}
+
+function toInsightDto(doc: StoredInsight, linked: Map<string, LinkedTask>) {
   return meetingInsightSchema.parse({
     meetingId: doc.meetingId.toString(),
     summary: doc.summary,
     keyDecisions: doc.keyDecisions,
-    actionItems: doc.actionItems.map((item, index) => ({
-      // A legacy item has no stored id. Its position is stable until the
-      // first edit, which gives every item a real one.
-      id: item._id ? item._id.toString() : `legacy-${index}`,
-      text: item.text,
-      assigneeName: item.assigneeName ?? null,
-      assigneeId: item.assigneeId ? item.assigneeId.toString() : null,
-      dueDate: item.dueDate ?? null,
-      status: item.status ?? 'open',
-      taskId: item.taskId ? item.taskId.toString() : null,
-    })),
+    actionItems: doc.actionItems.map((item, index) => {
+      const task = item.taskId ? linked.get(item.taskId.toString()) : undefined;
+      return {
+        // A legacy item has no stored id. Its position is stable until the
+        // first edit, which gives every item a real one.
+        id: item._id ? item._id.toString() : `legacy-${index}`,
+        text: item.text,
+        assigneeName: item.assigneeName ?? null,
+        assigneeId: item.assigneeId ? item.assigneeId.toString() : null,
+        dueDate: item.dueDate ?? null,
+        status: item.status ?? 'open',
+        taskId: task?.id ?? null,
+        task: task ?? null,
+      };
+    }),
     provider: doc.provider,
     createdAt: doc.createdAt.toISOString(),
     editedAt: doc.editedAt ? doc.editedAt.toISOString() : null,
@@ -86,13 +136,14 @@ export async function getMeetingIntelligence(
     Transcript.findOne({ meetingId: meeting._id }),
     loadInsight(meeting._id),
   ]);
+  const linked = await loadLinkedTasks(insight);
 
   return meetingIntelligenceSchema.parse({
     meetingId: meeting._id.toString(),
     aiStatus: meeting.aiStatus,
     aiError: meeting.aiError ?? null,
     transcript: transcript ? toTranscriptDto(transcript) : null,
-    insight: insight ? toInsightDto(insight) : null,
+    insight: insight ? toInsightDto(insight, linked) : null,
   });
 }
 
