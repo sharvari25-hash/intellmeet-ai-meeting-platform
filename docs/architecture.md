@@ -348,3 +348,206 @@ it owned, whatever their age, and takes it out of every team's member list. It
 runs from two places: the periodic sweep, for guests idle longer than
 `DEMO_DATA_TTL_HOURS` (idle meaning no refresh token issued since the cutoff),
 and `DELETE /api/auth/demo`, when a guest ends their own session.
+
+---
+
+## The housekeeping sweep
+
+Small jobs that keep shared state honest run inside the web process
+(`server/src/jobs/housekeeping.ts`): Render's free tier has no scheduler, and
+none of them deserves a service of its own. Every job is idempotent, so two
+instances running it at once waste a little effort rather than doing harm.
+
+| Cadence | Job |
+| --- | --- |
+| 30 s after start, then every 5 min | End live meetings everybody has left; put the demo board's sample tasks back once the board has been quiet |
+| 1 min after start, then every `DEMO_CLEANUP_INTERVAL_MIN` (30) | Demo cleanup: idle guests with what they made, stale demo content |
+
+### Ending meetings everybody has left
+
+Only the host's **End for all** used to end a meeting, and plenty of meetings
+never get one: the last person closes the tab, a laptop sleeps, the server
+restarts. Those stayed Live forever.
+
+```
+join / leave ─────────► lastActiveAt = now          (meeting.service)
+sweep, room occupied ─► lastActiveAt = now          (every 5 min)
+sweep, room empty  ───► lastActiveAt older than LIVE_MEETING_IDLE_MIN (10)?
+                          └─ yes: status ended, endedAt = lastActiveAt,
+                                  open attendance closed, room state cleared
+```
+
+Two sources of truth, deliberately:
+
+- **Who is connected** comes from Socket.io's own room membership, asked of
+  every instance through the Redis adapter (`fetchSockets`), never from the
+  Redis roster, which still lists everyone after a restart. If an instance
+  does not answer, the meeting is left alone: unknown is not empty.
+- **How long it has been empty** comes from `lastActiveAt`. After a restart
+  the sockets are gone but the stamp is at most one sweep old, so a call that
+  was running a minute ago is not ended while its people reconnect. One left
+  live overnight is ended by the first sweep after startup.
+
+`endedAt` is the last moment the room was known to be occupied, so the
+history shows how long the meeting ran rather than how long nobody noticed.
+The update is conditional on the meeting still being live with the same
+`lastActiveAt`, so a join that lands between the check and the write wins.
+
+**Reconnecting after a restart.** A reconnected socket is a new socket in no
+rooms. The room page now joins again on every reconnect and rebuilds its mesh
+(each peer connection was keyed to the old socket id). On every join the
+server first drops roster entries whose socket is gone (`sockets/rooms.ts`)
+and tells the room, so the newcomer never offers to a peer that died in the
+restart, and the others lose the frozen tile. The sweep does the same for
+rooms that stay occupied.
+
+---
+
+## Rate limits for a room of people behind one address
+
+A panel of judges on a college or office network shares one public IP, and
+so every per-IP limit. One demo session, counted from the client code:
+
+| Action | Auth requests |
+| --- | --- |
+| Open the landing page (any full page load) | 1 `POST /auth/refresh` |
+| Press **Try Live Demo** | 1 `POST /auth/demo` |
+| Each reload, new tab, pasted invite or notification link opened in a new tab | +1 refresh |
+| Each tab, every 15 minutes it is used (access token expiry) | +1 refresh |
+| A second (private) window to meet yourself in a call | +1 refresh, +1 demo |
+
+A 20-minute session with two windows and a couple of reloads is about nine
+requests. Under the old shared budget of 30 per IP per 15 minutes, the fourth
+judge on one network got a 429: on the landing page as "Too many requests",
+and on a reload as being signed out (the client reads a failed refresh as "no
+session").
+
+| Limiter | Key | Budget | Why |
+| --- | --- | --- | --- |
+| Refresh | IP | 600 / 15 min (`RATE_LIMIT_REFRESH_PER_15_MIN`) | Nothing to guess (256-bit tokens): it only bounds a runaway client or a flood |
+| Demo sign-in | IP | 60 / 15 min (`RATE_LIMIT_DEMO_PER_15_MIN`) | Creates an account, so bounded twice: here, and for everyone by `DEMO_MAX_GUESTS` |
+| Register + sign-in | IP | 30 / 15 min | Each hashes a password (bcrypt, ~350 ms CPU); unchanged |
+| Failed sign-in | IP + email | 5 / 15 min | Now counts **failures only**: a correct password is not a guess |
+| Board edits | account | 120 / min | Dragging cards is bursty; per account, so a room does not share it |
+
+**Why refresh is not keyed on the session.** The refresh token rotates on
+every call, so it is a different key each time. The only stable session key,
+the family id, is known only after the database lookup the limiter protects,
+and keying on the raw cookie would give every forged value a fresh bucket.
+
+---
+
+## Team boards and tasks (Phase 8)
+
+```
+Team 1───n Board ─── columns[{_id, title, isDone}]   (array order = display order)
+             │
+             1───n Task ─── columnId, order, assignee, dueDate, priority,
+                   │        sourceMeetingId + sourceActionItemId, version
+                   1───n TaskComment
+MeetingInsight.actionItems[].taskId ──► Task          (both directions)
+```
+
+- **One default board per team**, created on first use (a partial unique
+  index makes concurrent first visits create exactly one). Tasks from meeting
+  action items go there. Admins may add more boards.
+- **Columns are the team's workflow**, so only a team admin adds, renames,
+  reorders (as a whole list, refused unless it is exactly the current set) or
+  removes them (only when empty). "Done" is a flag, not a position: a task in a
+  done column is never overdue, whatever the column is called.
+
+### Fractional ordering
+
+A card's `order` is a float. A drop is sent as the neighbours it landed
+between (`afterId`, `beforeId`); the server reads their orders and stores the
+midpoint, so **a move writes one document**. When repeated drops into one slot
+have halved the gap below `MIN_ORDER_GAP` (about 30 drops), the column is
+renumbered in steps of 1024 and the renumbered cards are returned with the
+move. The same `orderBetween` runs in the browser for the optimistic update,
+so the card is already where the server puts it.
+
+Neighbours rather than an index or a number: a client whose board is a second
+stale still lands the card next to the cards the person could see, and a
+neighbour that has since moved away is simply ignored.
+
+### A move, end to end
+
+```mermaid
+sequenceDiagram
+    participant A as Window A
+    participant API as API
+    participant DB as MongoDB
+    participant B as Window B (board room)
+
+    A->>A: drop: moveLocally() in the query cache (optimistic)
+    A->>API: POST /tasks/:id/move { columnId, afterId, beforeId }
+    API->>DB: neighbours' orders -> midpoint (or renumber)
+    API->>DB: $set columnId, order; $inc version
+    API-->>A: { task, reordered }  (cache: replace if version >= ours)
+    API-->>B: task:moved { task, reordered } to board:<id>
+    B->>B: apply if version >= cached version
+```
+
+- **Board rooms.** A page showing a board joins `board:<id>`; the server
+  checks team membership on every join, like a meeting room.
+- **Versions.** Every write increments `version`. Events can arrive out of
+  order (two moves of one card a few milliseconds apart), so a client never
+  replaces a task with an older copy. The sender's own echo is recognised the
+  same way, so the server needs no "which socket made this request".
+- **Refresh, not patch, for broad changes.** Column changes, a demo-board reset
+  and a guest leaving (taking its tasks) send `board:refresh`; viewers reload.
+- **Reconnect.** A reconnected socket rejoins the board room and reloads once
+  to catch up on what it missed.
+
+### Who may do what
+
+One rule, shared by the server (enforcement) and the page (what is offered):
+`taskPermissions` in `shared/src/task.ts`.
+
+| | Member | Team admin |
+| --- | --- | --- |
+| Create, move, comment | any task | any task |
+| Edit | any task except a seeded sample | any |
+| Delete | tasks they created | any |
+| Boards and columns | - | yes |
+
+### The shared demo board
+
+Every judge is a guest member of the one seeded demo team, so they share its
+board. The rules above already stop one judge breaking it for the next:
+nobody but an admin (no guest is one) can edit or delete the samples, rename
+or remove the columns, or delete another judge's tasks. Moving is the point of
+a board, so moves are allowed and undone later instead: once the board has
+been quiet (nothing created, changed, moved or commented) for
+`DEMO_BOARD_RESET_IDLE_MIN` (60), the housekeeping sweep re-runs the seed for
+the board, putting the samples back in place, with fresh relative due dates
+and without the comments left on them. A board somebody is using is never
+reset under them.
+
+Seeded tasks, the columns and the sample action items all have ids derived
+from stable keys (`stableObjectId`), so re-seeding updates rather than
+duplicates and never breaks a link. Guest-created tasks and comments go with
+the guest (end of session or the idle sweep); tasks others gave a guest stay,
+unassigned. The demo cleanup never matches a seeded task (`deleteTasksWhere`
+excludes them unless a whole board is being deleted).
+
+### Action items into tasks
+
+`POST /api/meetings/:id/tasks` turns one or many items into tasks at the
+bottom of the team board's first column. The owner and deadline arrive
+pre-filled from the AI's reading and can be changed in the dialog. Each task
+keeps `sourceMeetingId` + `sourceActionItemId`, each item its `taskId`, and a
+unique index on the pair means a double-click (or two people at once) makes
+one task. The meeting page reads each linked task's column live, so an item
+says "In Progress" rather than only "has a task"; deleting the task frees the
+item again. Deleting the meeting keeps the tasks and drops the link.
+
+### @mentions
+
+Plain text: `@Grace Hopper`, or `@Grace` when no other team member shares the
+first name (the same no-guessing rule as AI owner matching). Nothing is
+stored but the text, so a message reads the same everywhere. One parser
+(`shared/src/mentions.ts`) decides both who is notified and what the page
+highlights. Only team members can be mentioned; mentioning yourself notifies
+nobody. Chat mentions link to the meeting's chat log, comment mentions and
+assignments to the task on its board.

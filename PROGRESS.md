@@ -5,6 +5,306 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 8 — Team Workspace, Kanban & Tasks ✅
+
+**Completed:** 2026-09-24
+
+### Before Phase 8, fix 1: live meetings nobody ended stayed Live forever
+
+**Symptom:** a meeting showed "Live" for 10+ hours. Only the host's **End for
+all** ended a meeting; a closed tab, a sleeping laptop or a server restart
+never does, and the demo cleanup never removes a meeting whose host is a
+seeded account.
+
+**Fix:** a meeting now records `lastActiveAt`, the last moment somebody was
+known to be in its room (every join and leave, and the sweep while the room is
+occupied). The housekeeping sweep (30 s after startup, then every 5 minutes)
+ends any live meeting with **nobody connected** whose `lastActiveAt` is older
+than `LIVE_MEETING_IDLE_MIN` (10): so 10-15 minutes after the room empties.
+`endedAt` is set to `lastActiveAt`, so the history shows how long the meeting
+ran, not how long it went unnoticed; open attendance is closed, the room's
+Redis state cleared, the cached view evicted.
+
+| Decision | Why |
+| --- | --- |
+| **"Connected" from Socket.io's room membership (`fetchSockets`), not the Redis roster** | The roster is written by leave handlers a crash never runs, so after a restart it lists everyone. Socket.io asks every instance through the Redis adapter; if one does not answer, the meeting is skipped. Unknown must never read as empty. |
+| **The idle clock is a stamp, not "roster empty since"** | After a restart the sockets are gone but the stamp is at most one sweep old: a call running a minute ago is not ended while its people reconnect, and one abandoned overnight is ended by the first sweep. |
+| **First check 30 s after boot** | The "on startup" check, delayed just enough for people who were mid-call to reconnect and rejoin first. |
+| **Conditional update** (`status: live` and the same `lastActiveAt`) | A join landing between the check and the write keeps the meeting open; several instances sweeping end it once. |
+| **One scheduler, `jobs/housekeeping.ts`** | The demo cleanup's timer moved there. The quick jobs (this, the demo board reset) run every 5 minutes; the demo cleanup keeps its 30. |
+
+**Found while building it (bug 1 below):** the room page never rejoined its
+room after a socket reconnect. That is the restart case exactly: people stayed
+in a working peer-to-peer call while the server thought the room was empty,
+with no chat or signalling, and the new sweep would have ended the meeting
+under them. Fixed as part of this: the page rejoins on every reconnect and
+rebuilds its mesh, and every join first removes roster entries whose socket is
+gone and tells the room (`sockets/rooms.ts`), so nobody offers to a peer that
+died in the restart. The sweep prunes such ghosts from occupied rooms too.
+
+**Tests (13 + 1):** ended at the idle limit and dated to when it emptied (with
+the cache evicted); ended whoever hosts it, the seeded persona included;
+started-but-never-joined; a room that just emptied is kept; a call running
+when the server restarted is kept while people reconnect; an occupied meeting
+is kept however old, with its clock refreshed; never ended when an instance
+does not answer; nothing without a socket server; scheduled and ended meetings
+untouched; the clock is stamped on join and leave; ghosts are dropped before a
+newcomer gets the roster, announced as left, a dead recorder stops the
+indicator; occupied rooms are pruned by the sweep. Client: the room joins
+again after a reconnect and rebuilds its transport.
+
+### Before Phase 8, fix 2: rate limits for a room of judges on one network
+
+**Assessment: the risk was real.** Counted from the client code, one demo
+session costs: 1 refresh per full page load (the landing page included, since
+the access token lives in memory), 1 demo sign-in, +1 refresh per reload, new
+tab or pasted link, +1 per open tab each 15 minutes, and a second private
+window (to meet yourself in a call) adds another refresh and demo sign-in.
+Twenty minutes with two windows and a couple of reloads is about **nine**. The
+old budget, 30 per IP per 15 minutes shared by register, sign-in, refresh and
+demo, ran out at the **fourth** judge on one network; a class of twenty opening
+the link at once would have hit it in the first minute. The failure was ugly:
+"Too many requests" on the landing page, or, on a reload, looking signed out
+(a failed refresh reads as "no session"). The seeded-account path was also
+tight: five judges signing in as Ada from one network locked out the sixth,
+because the per-account limiter counted successful sign-ins.
+
+**Choice:** separate budgets by what each endpoint risks.
+
+| Limiter | Key | Budget |
+| --- | --- | --- |
+| Refresh | IP | 600 / 15 min (`RATE_LIMIT_REFRESH_PER_15_MIN`): about 60 people's worth |
+| Demo sign-in | IP | 60 / 15 min (`RATE_LIMIT_DEMO_PER_15_MIN`): 30 people with two windows |
+| Register + sign-in | IP | 30 / 15 min, unchanged: each hashes a password (bcrypt ~350 ms of CPU) |
+| Failed sign-in | IP + email | 5 / 15 min, now **failures only** |
+| Board edits (new) | account | 120 / min, so a room dragging cards does not share one budget |
+
+- **Refresh stays per IP, generously**, rather than keyed on the session: the
+  token rotates on every call, so its only stable key (the family id) is known
+  only after the database lookup the limiter protects, and keying on the raw
+  cookie would give every forged value its own bucket. There is nothing to
+  guess in a 256-bit token, so a high ceiling only has to stop a runaway
+  client or a flood.
+- **Demo stays bounded twice**: 60 per address, and `DEMO_MAX_GUESTS` (200)
+  for everyone. The trade-off: one address could use up to 60 of the 200 guest
+  slots in 15 minutes. A deployment facing abuse would put a CAPTCHA on "Try
+  Live Demo"; both numbers are environment variables for demo day.
+
+**Tests:** 45 page loads from one address are never rate limited; the refresh
+limit still applies (lowered via env); 35 demo sign-ins from one address
+succeed without using the register budget; the demo limit still applies; 8
+successful sign-ins to one account pass, and 5 failures still lock it.
+
+### Polish
+
+The avatar menu's guest hint ("Demo guest - rename yourself in Settings") was
+truncated in the 15rem menu. It now wraps; a real account's email still
+truncates on one line. Checked at 360 px.
+
+### Built
+
+- **Boards per team.** Every team gets a default board on first use (To Do /
+  In Progress / Review / Done); admins can create more. Columns are added,
+  renamed, reordered (move left / right), marked as "counts as done" and
+  removed when empty, by a team admin.
+- **Tasks:** title, description, assignee (team members only), due date,
+  priority, the column, and a link back to the meeting and action item they
+  came from. Comments with @mentions. Delete with confirmation.
+- **Drag and drop (dnd-kit)** within and across columns: mouse (after 6 px),
+  touch (after a short press, so a swipe still scrolls) and keyboard (Space on
+  the card's grip, arrows, Space). Screen readers hear task and column names,
+  never ids. The task's **Column** picker is a second way to move without a
+  mouse.
+- **Fractional ordering and optimistic moves:** a drop is sent as the two
+  cards it landed between; one document is written; the card moves at once
+  and goes back with an explanation if the server refuses.
+- **Real-time sync:** board rooms (`board:<id>`), events for created, updated,
+  moved, deleted and commented tasks, and a "reload" event for column changes.
+  Every task has a `version`, so late or duplicate events never overwrite a
+  newer state. Two different guests in two windows see each other's cards
+  appear, move and gather comments.
+- **"Create task" on the meeting page is real:** per item, or **Create tasks
+  for all**, in a dialog with each owner pre-filled from the AI's match (and a
+  note when the AI heard a name that belongs to nobody) and the due date
+  pre-filled too. Items with a task show its column live ("In Progress") and
+  link to it. Uses the stable action-item ids from Phase 7; legacy items get
+  real ids on first use.
+- **@mentions** in meeting chat and task comments: type `@`, pick from the
+  team, and the person gets a notification (live, and in the bell) that links
+  to the meeting's chat or the task. Mentions are highlighted where they
+  appear.
+- **Assignment notifications** (`task_assigned`) when someone else gives you a
+  task.
+- **My Tasks:** everything assigned to you across boards and teams, grouped
+  Overdue / Coming up / No due date / Done. Overdue is highlighted there and
+  on the board (a task in a "done" column is never overdue).
+- **The seeded demo board:** six sample tasks across all four columns, one
+  deliberately overdue, three made from the sample meetings' action items
+  (so those items already say "In Progress", "Review", "Done").
+
+### The shared demo board: what judges may and may not do
+
+All judges are guest members of one seeded team, so they share its board. The
+general permission rule (`taskPermissions`, shared by server and client)
+already keeps one judge from breaking it for the next:
+
+| A guest (plain member) can | A guest cannot |
+| --- | --- |
+| Move any card, samples included | Edit or delete a sample task (admins only; no guest is one) |
+| Create tasks; edit and delete **their own** | Delete another judge's task |
+| Comment and @mention on any task | Add, rename, reorder or remove columns, or boards |
+| Turn a sample meeting's action items into tasks | Grow the board past 300 tasks |
+
+Moves are the point of a board, so they are allowed and **undone later**: once
+the demo board has been quiet (nothing created, edited, moved or commented)
+for `DEMO_BOARD_RESET_IDLE_MIN` (60), the sweep re-runs the seed for the board.
+The samples go back to their columns with fresh relative due dates and without
+comments; columns go back to the defaults. A board in use is never reset under
+anyone. `npm run demo:cleanup -w @intellmeet/server -- 0` also resets it at
+once.
+
+Cleanup: a guest's tasks and comments go with the guest (end of session or the
+idle sweep); tasks somebody else gave a guest stay, unassigned; an action item
+whose task goes offers "Create task" again. **Seeded tasks are never deleted**:
+`deleteTasksWhere` excludes them unless a whole board is deleted, and the
+seeded board belongs to the seeded team, which nothing deletes. A mutation
+check confirmed the test notices: with the exclusion removed, "never removes
+the samples, even when asked to sweep everything" fails.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Moves as neighbours (`afterId`/`beforeId`), not an index or a number** | The server computes the order from its own copy of the neighbours, so a client with a slightly stale board still lands the card where the person dropped it, and cannot write an arbitrary order. |
+| **Fractional `order`, renumbered only when the gap runs out** | A move writes one document instead of shifting every card below it. After ~30 drops into one slot the column is renumbered in steps of 1024 and the renumbered cards travel with the move event. |
+| **The same `orderBetween` on both sides** | The optimistic position is the one the server will store, so nothing jumps when the answer arrives. |
+| **A `version` per task** | Socket events and HTTP answers can arrive in any order; the client keeps the highest version. It also makes the sender's own echo harmless, so the server needs no "which socket sent this". |
+| **Events patch the cache; broad changes ask for a reload** | A drag in another window is one small event. Column changes, a reset or a guest leaving are rare and reshape the board, so viewers refetch. |
+| **Board rooms, joined per page, membership checked on join** | Only people looking at a board get its events (the demo team can have 200 guests); a board id is never a capability on its own. |
+| **Columns and boards are admin-only; cards are everyone's** | Columns are the team's workflow and shared by everybody; cards are day-to-day work. It is also exactly what keeps judges from breaking the shared board. |
+| **Delete: creator or admin; edit: any member except samples** | Collaborative editing is normal on a board; deleting someone else's work is not a member's call. |
+| **"Done" is a column flag, not "the last column"** | Renaming or reordering columns never silently changes what counts as finished. |
+| **Action item status is not synced to its task's column** | The minutes are the host's; the item shows its task's column live instead ("In Progress"), which says more than a tick. The seeded "Done" sample's item is marked done at seed time for consistency. |
+| **Any team member can turn items into tasks** | Filing the tasks is often not the host's job. On the shared samples, a guest's tasks go with the guest, which frees the items for the next judge. |
+| **Unique index on (meeting, action item)** | A double click, or two people pressing at once, makes one task; the other request reports the item as skipped. Tested with two parallel requests. |
+| **Plain-text mentions (`@Grace Hopper`, `@Grace` when unique)** | Nothing to render specially anywhere (chat log, exports, notifications); the server and the page share one parser, so the highlighted names are the notified ones. An ambiguous first name notifies nobody, like the AI owner matching. |
+| **Comments in their own collection** | A busy discussion would otherwise grow the task document every board load reads; counts are aggregated per board load. |
+| **Default board created lazily, guarded by a partial unique index** | Every team that existed before boards gets one, and concurrent first visits create exactly one (tested with five in parallel). |
+| **Stable ids for seeded columns, tasks and sample action items** | Re-seeding (a deploy, a reset) updates instead of duplicating and never breaks a link, including links judges made to sample items. |
+| **Sample due dates relative to the seed** | The sample meetings are a week or two old; copying their items' deadlines made three of five open samples overdue. Now exactly one is, on purpose. |
+| **dnd-kit with separate grip and title controls** | Mouse and touch drag from anywhere on the card; the keyboard drag lives on the grip, so Enter on the title opens the task instead of picking it up. |
+| **Services never emit; controllers call `task.events.ts`** | The socket layer imports the board service (to check who may watch), so the services reaching back into the socket layer would be a real import cycle. |
+
+### Bugs found while building
+
+1. **The room never rejoined after a socket reconnect** (see fix 1). After a
+   server restart people kept a peer-to-peer call the server no longer knew
+   about: no chat, no signalling, and no way back without reloading.
+2. **Every `npm run seed` gave the sample meetings' action items new random
+   ids.** The seed replaced the item array wholesale, so any task linked to a
+   sample item would have lost its link on the next seed or deploy. The ids
+   are now derived from the fixture and item index, and existing task links
+   are carried over.
+3. **The board made the whole page 1000 px wide at 360 px**, found by the 360
+   px check. Screen-reader-only labels are absolutely positioned, and with no
+   positioned ancestor the ones in off-screen columns escaped the board's
+   horizontal scroller. The scroller is now the containing block.
+4. **The first visit to /app/tasks reloaded the dev page mid-navigation**,
+   found by the e2e run. dnd-kit is only reachable through the lazy task page,
+   so Vite's start-up scan missed it and re-bundled on first use. It is now
+   pre-bundled (`optimizeDeps.include`). Development only.
+5. **Comments on the shared samples survived a reset, and commenting did not
+   count as using the board**, found in review. A reset could have landed
+   mid-conversation. Both fixed and tested.
+
+### Known limitations
+
+- **Columns move with buttons (left / right), not by dragging.** Cards drag.
+- **After a reconnect the mesh is rebuilt**, so video blinks for a second, and
+  a screen share has to be started again.
+- **No editing or deleting a single comment**; comments go with their task (or
+  their guest).
+- **Concurrent edits to one task: last write wins.** Versions order events;
+  they do not merge two people's edits to the same field.
+- **A board is loaded whole** (capped at 300 tasks), with no pagination.
+- **My Tasks is not live**: it reloads on each visit and when you are assigned
+  something.
+- **A meeting whose people sit in the lobby (not joined) for 10+ minutes is
+  ended**, since "connected" means in the room.
+- **Touch drag was checked by design and at 360 px, not on a real phone.** The
+  e2e drag uses the mouse.
+- **Mention suggestions list up to six people** matching the start of a name;
+  in the demo team (up to 200 guests) typing more letters narrows them.
+- **Test-run notes:** three targeted `npx playwright test e2e/board.spec.ts`
+  runs ended with Node's `UV_HANDLE_CLOSING` assertion *after* all tests had
+  passed (exit code 9). It did not occur in the full `npm run test:e2e` runs,
+  which exited 0. And one "not wrapped in act" warning appears only in the
+  full parallel client run; no test file produces it on its own.
+
+### Manual test script (two windows)
+
+Prerequisites: `docker compose up -d`, **`npm run seed -w @intellmeet/server`
+(re-run it: it adds the board and stable action-item ids)**, `npm run dev`.
+
+1. Window 1 (normal) <http://localhost:5173> → **Try Live Demo** → **Tasks**.
+   Six sample tasks; *Triage the accessibility audit findings* says
+   **Overdue**.
+2. Window 2 (private window) → **Try Live Demo** → **Tasks**. A different name
+   in the account menu.
+3. Window 1: **Add a task** under To Do, type a title, Enter. It appears in
+   window 2 at once.
+4. Window 1: drag it to **In Progress**. It moves in window 2. Reload window
+   2: still there.
+5. Window 2: open that task. No **Delete task** (not theirs). In **Add a
+   comment** type `@` and the first letters of window 1's name, pick it, add
+   a few words, **Comment**. Window 1: the card shows the comment count, the
+   bell lights up; pick the notification and the task opens.
+6. Window 2: open *Triage the accessibility audit findings*: read-only, with
+   the sample note. Change **Column** to Done: it moves in window 1. Try to
+   edit it with the API (below): 403.
+7. Window 1: **Meetings** → *Sprint 14 planning* → **Action items**. *Fix the
+   recording upload retry bug* already shows **In Progress** (seeded). Press
+   **Create tasks for all (3)**: owners and dates are filled in from the AI.
+   **Create 3 tasks**. The items now show **To Do** and link to their tasks;
+   window 2's board shows them live.
+8. Window 1: open one of them, set **Assignee** to yourself and **Due date**
+   to yesterday, **Save changes**. **Tasks → My tasks**: it is under
+   **Overdue**.
+9. In a live meeting, type `@` in the chat to mention someone who is not in
+   the room; they get a notification linking to the chat.
+10. Stale meetings: start a meeting, join, close the tab. Within 10-15 minutes
+    the dashboard shows it ended (`LIVE_MEETING_IDLE_MIN=1` in `server/.env`
+    shows it within 1-6 minutes).
+11. Both windows: account menu → **End demo session**. Their tasks and
+    comments leave the board; the items they filed offer **Create task**
+    again; the samples stay.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **587 passed** (416 server, 171 client) |
+| `npm run test:e2e` | ✅ **7 passed**, twice: two guests on one board (create, drag, live move, comment + mention), action item → task, demo identity, history, mesh, controls, record → AI |
+| Server coverage | ✅ **93.2% statements**, 84.0% branches (Phase 7: 91.9% / 83.1%) |
+| Horizontal overflow at 360px | ✅ none: board, task dialog, My Tasks, action items, create-tasks dialog |
+| `npm run build` | ✅ all 3 workspaces; the task page is its own lazy chunk (82 kB, 27 kB gzipped, dnd-kit included) |
+| e2e cleanup | ✅ database compared before and after: same guests (the 2 that were there), 6 tasks (all seeded, at their seeded positions, version 1), 3 action-item links (the seeded ones), 0 comments, same notifications and messages |
+
+The e2e runs used the running dev servers (the API had reloaded the new code:
+the new routes answered 401, not 404).
+
+### Next phase
+
+**Phase 9 — Analytics & Insights:** aggregation endpoints (meetings per week,
+durations, participants, action items created vs completed, task completion
+per member, most active members) cached in Redis, a Recharts dashboard with a
+date range and team filter, and CSV export. The tasks and their links to
+meetings now give the "completed" side real data.
+
+---
+
 ## Phase 7 — Post-Meeting Dashboard & History ✅
 
 **Completed:** 2026-09-24
@@ -181,13 +481,14 @@ local database after every run in this phase.
   timestamped.
 - **Transcripts are not editable**; the design review in the samples parks the
   same question.
-- **"Create task" is disabled until Phase 8.**
+- **"Create task" is disabled until Phase 8.** *(Phase 8: done.)*
 - **Two tabs of one browser profile share the refresh cookie**, so a second
   "Try Live Demo" in the same profile replaces the first guest in both tabs at
   the next token refresh. The landing page says to use a private window.
 - **The e2e suite uses ~20 of the 30 auth requests** one IP may make in 15
   minutes (every page load refreshes the session). Global setup resets the
-  counters; manual sign-ins alongside a run can still exhaust them.
+  counters; manual sign-ins alongside a run can still exhaust them. *(Phase 8:
+  refresh and demo sign-in have their own, much larger budgets.)*
 - **Six orphaned chat messages** from Phase 6 e2e runs (23 Sep, before this
   phase) remain in the local database; their meetings were deleted before the
   cascade existed. Harmless; not created by this phase.
