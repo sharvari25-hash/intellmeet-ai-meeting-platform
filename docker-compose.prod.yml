@@ -1,0 +1,89 @@
+# The whole stack from the production images: MongoDB, Redis, the API (with
+# its in-process AI worker) and the client behind nginx, on one origin.
+#
+#   docker compose --env-file server/.env -f docker-compose.prod.yml up -d --build
+#   docker compose --env-file server/.env -f docker-compose.prod.yml run --rm server node dist/scripts/seed.js
+#   open http://localhost:8080  ->  Try Live Demo
+#   docker compose -f docker-compose.prod.yml down        (add -v to wipe its data)
+#
+# `--env-file server/.env` is only used to fill in ${...} below (JWT_SECRET,
+# and the optional AI settings); the file itself never enters an image.
+#
+# It is a separate Compose project from docker-compose.yml (the development
+# databases): its own containers, network and volumes, and no ports but the
+# client's, so it runs alongside `npm run dev` without a clash.
+name: intellmeet-prod
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # BullMQ keeps jobs in Redis; an eviction policy other than noeviction
+    # would silently drop queued meetings under memory pressure.
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: intellmeet-server:local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/intellmeet
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET, e.g. pass --env-file server/.env}
+      # The browser's origin is the nginx container's published port.
+      CORS_ORIGINS: http://localhost:${CLIENT_PORT:-8080}
+      CLIENT_URL: http://localhost:${CLIENT_PORT:-8080}
+      RUN_WORKER_IN_PROCESS: 'true'
+      AI_PROVIDER: ${AI_PROVIDER:-mock}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+      GEMINI_FALLBACK_MODELS: ${GEMINI_FALLBACK_MODELS:-gemini-3.6-flash,gemini-3.7-flash,gemini-3.8-flash}
+    volumes:
+      # Recordings, when Cloudinary is not configured.
+      - recordings:/app/server/.data
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    image: intellmeet-client:local
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: http://server:5000
+    ports:
+      - '${CLIENT_PORT:-8080}:8080'
+    depends_on:
+      server:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  redis-data:
+  recordings:
