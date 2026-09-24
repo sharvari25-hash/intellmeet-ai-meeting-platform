@@ -2,6 +2,7 @@ import { env, isTest } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 import { restoreDemoBoard } from '../modules/demo/demo.board.js';
 import { cleanupDemoData } from '../modules/demo/demo.cleanup.js';
+import { refreshDemoHistory } from '../modules/demo/demo.history.js';
 import { endAbandonedMeetings } from '../modules/meetings/meeting.sweep.js';
 
 /**
@@ -21,7 +22,9 @@ import { endAbandonedMeetings } from '../modules/meetings/meeting.sweep.js';
  *   that catches a meeting left live across a restart; the 30 seconds give
  *   people who were mid-call time to reconnect and rejoin first. The same
  *   pass puts the demo board's sample tasks back once the board has been
- *   quiet for `DEMO_BOARD_RESET_IDLE_MIN` (a single indexed read otherwise).
+ *   quiet for `DEMO_BOARD_RESET_IDLE_MIN` (a single indexed read otherwise),
+ *   and, once a week, moves the seeded history forward so the analytics'
+ *   "last eight weeks" stay full (also one indexed read the rest of the time).
  * - **Every `DEMO_CLEANUP_INTERVAL_MIN` (30), first after a minute:** the demo
  *   workspace cleanup, a handful of deletes that has no reason to run often.
  */
@@ -47,8 +50,18 @@ function guarded(name: string, job: () => Promise<unknown>): () => void {
  * sweep can be run by hand or from a test.
  */
 export async function runQuickSweep(): Promise<void> {
+  // The demo jobs run in order: moving the history forward (once a week)
+  // re-dates the meetings the board's tasks are dated from.
+  const demo = async () => {
+    try {
+      await refreshDemoHistory();
+    } finally {
+      await restoreDemoBoard();
+    }
+  };
+
   // Independent jobs: one failing must not stop the other.
-  const results = await Promise.allSettled([endAbandonedMeetings(), restoreDemoBoard()]);
+  const results = await Promise.allSettled([endAbandonedMeetings(), demo()]);
   for (const result of results) {
     if (result.status === 'rejected') {
       logger.error({ err: result.reason }, '[housekeeping] job failed');

@@ -4,6 +4,7 @@ import { connectRedis, disconnectRedis } from '../config/redis.js';
 import { logger } from '../lib/logger.js';
 import { restoreDemoBoard } from '../modules/demo/demo.board.js';
 import { cleanupDemoData } from '../modules/demo/demo.cleanup.js';
+import { refreshDemoHistory } from '../modules/demo/demo.history.js';
 
 /**
  * Runs the demo cleanup once, from the command line.
@@ -36,8 +37,10 @@ async function main(): Promise<void> {
 
   const result = await cleanupDemoData({ olderThanHours });
 
-  // Clearing the decks before a demo also puts the sample tasks back where
-  // the seed left them, rather than waiting for the board to go quiet.
+  // Clearing the decks before a demo also moves the seeded history up to this
+  // week (if the sweep has not yet) and puts the sample tasks back where the
+  // seed left them, rather than waiting for the board to go quiet.
+  const historyMoved = olderThanHours === 0 ? await refreshDemoHistory() : false;
   const boardRestored = olderThanHours === 0 ? await restoreDemoBoard({ force: true }) : false;
 
   console.log(
@@ -49,6 +52,7 @@ async function main(): Promise<void> {
   console.log(`  teams          ${result.teams}`);
   console.log(`  tasks          ${result.tasks}`);
   console.log(`  notifications  ${result.notifications}`);
+  if (historyMoved) console.log('  seeded history moved forward to this week');
   if (boardRestored) console.log('  sample tasks   put back as seeded');
   console.log(
     '\nThe seeded demo team, its members, sample meetings and sample tasks are never removed.\n',
