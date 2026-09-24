@@ -9,6 +9,11 @@
  */
 let sharedContext: AudioContext | null = null;
 
+/** The page's one AudioContext, shared by the meters and the recording mixer. */
+export function getAudioContext(): AudioContext | null {
+  return getContext();
+}
+
 function getContext(): AudioContext | null {
   if (sharedContext) return sharedContext;
 

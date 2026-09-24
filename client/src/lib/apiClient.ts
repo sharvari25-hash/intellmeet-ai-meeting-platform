@@ -62,7 +62,17 @@ function send(path: string, options: RequestOptions, token: string | null): Prom
   const headers: Record<string, string> = { Accept: 'application/json' };
 
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+
+  // A Blob (a meeting recording) goes up as-is, typed by its own MIME type;
+  // everything else is JSON. A Blob can be sent twice, so the refresh-and-
+  // retry path works for uploads too.
+  const isBlob = options.body instanceof Blob;
+  if (isBlob) headers['Content-Type'] = (options.body as Blob).type || 'application/octet-stream';
+  else if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+
+  let body: BodyInit | undefined;
+  if (isBlob) body = options.body as Blob;
+  else if (options.body !== undefined) body = JSON.stringify(options.body);
 
   return fetch(`${API_PREFIX}${path}`, {
     method: options.method ?? 'GET',
@@ -70,7 +80,7 @@ function send(path: string, options: RequestOptions, token: string | null): Prom
     // Same-origin already implies cookies are sent, but saying so keeps the
     // refresh cookie's role explicit for anyone reading this in isolation.
     credentials: 'same-origin',
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    body,
     signal: options.signal,
   });
 }
