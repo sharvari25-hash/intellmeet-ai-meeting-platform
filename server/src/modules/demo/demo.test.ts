@@ -5,7 +5,8 @@ import { Meeting } from '../meetings/meeting.model.js';
 import { Notification } from '../notifications/notification.model.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
-import { cleanupDemoData, startDemoCleanup, stopDemoCleanup } from './demo.cleanup.js';
+import { runQuickSweep, startHousekeeping, stopHousekeeping } from '../../jobs/housekeeping.js';
+import { cleanupDemoData } from './demo.cleanup.js';
 import { MeetingInsight } from '../ai/insight.model.js';
 import { Transcript } from '../ai/transcript.model.js';
 import { DEMO_TEAM_SLUG } from './demo.constants.js';
@@ -167,7 +168,14 @@ describe('demo workspace cleanup', () => {
 
     const result = await cleanupDemoData({ olderThanHours: 6 });
 
-    expect(result).toEqual({ guests: 0, meetings: 0, messages: 0, teams: 0, notifications: 0 });
+    expect(result).toEqual({
+      guests: 0,
+      meetings: 0,
+      messages: 0,
+      teams: 0,
+      tasks: 0,
+      notifications: 0,
+    });
     expect(await Team.countDocuments({ slug: 'platform' })).toBe(1);
     expect(await Meeting.countDocuments({ roomCode: 'REAL123' })).toBe(1);
   });
@@ -209,6 +217,7 @@ describe('demo workspace cleanup', () => {
       meetings: 0,
       messages: 0,
       teams: 0,
+      tasks: 0,
       notifications: 0,
     });
   });
@@ -230,11 +239,17 @@ describe('cleanup scheduling', () => {
   it('does not start a background timer under test', () => {
     // The guard matters: a timer running during the suite would delete data
     // out from under unrelated tests, and would keep vitest alive after they
-    // finished. `stopDemoCleanup` is therefore also a no-op here.
+    // finished. `stopHousekeeping` is therefore also a no-op here.
     expect(() => {
-      startDemoCleanup();
-      stopDemoCleanup();
+      startHousekeeping();
+      stopHousekeeping();
     }).not.toThrow();
+  });
+
+  it('runs the frequent pass without throwing, even with nothing to do', async () => {
+    // No socket server and no demo board: each job has nothing to act on,
+    // and a job that fails must be logged rather than take the process down.
+    await expect(runQuickSweep()).resolves.toBeUndefined();
   });
 });
 

@@ -130,4 +130,50 @@ describe('useMeetingRoom', () => {
     expect(latest).toHaveBeenCalledOnce();
     expect(first).not.toHaveBeenCalled();
   });
+
+  it('joins the room again when the socket reconnects, and rebuilds the mesh', async () => {
+    const { result } = renderHook(
+      () => useMeetingRoom({ meeting: MEETING, localStream: null, onForceMute: () => {} }),
+      { wrapper },
+    );
+    await settle();
+    await settle();
+
+    const handler = (event: string) =>
+      socket.on.mock.calls.find(([name]) => name === event)?.[1] as (data?: unknown) => void;
+    const joins = () => socket.emitted.filter((event) => event === SOCKET_EVENTS.ROOM_JOIN);
+    const roster = (selfSocketId: string) => ({
+      meetingId: MEETING.id,
+      selfSocketId,
+      participants: [
+        {
+          socketId: selfSocketId,
+          userId: MEETING.hostId,
+          name: 'Ada Lovelace',
+          avatarUrl: null,
+          isHost: true,
+          media: { audio: true, video: true, screen: false },
+          joinedAt: new Date().toISOString(),
+        },
+      ],
+      recording: false,
+    });
+
+    // A connect before the first roster is the original join going out.
+    act(() => handler('connect')());
+    expect(joins()).toHaveLength(1);
+
+    act(() => handler(SOCKET_EVENTS.ROOM_PARTICIPANTS)(roster('first-socket')));
+    const firstTransport = result.current.transport;
+    expect(result.current.phase).toBe('live');
+
+    // The server restarted: a new socket, in no rooms, until we say so.
+    act(() => handler('connect')());
+    expect(joins()).toHaveLength(2);
+
+    act(() => handler(SOCKET_EVENTS.ROOM_PARTICIPANTS)(roster('second-socket')));
+    expect(result.current.phase).toBe('live');
+    expect(result.current.self?.socketId).toBe('second-socket');
+    expect(result.current.transport).not.toBe(firstTransport);
+  });
 });
