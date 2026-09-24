@@ -1,6 +1,11 @@
 import { Router } from 'express';
 import { loginSchema, registerSchema } from '@intellmeet/shared';
-import { authLimiter, loginLimiter } from '../../middleware/rateLimit.js';
+import {
+  authLimiter,
+  demoLimiter,
+  loginLimiter,
+  refreshLimiter,
+} from '../../middleware/rateLimit.js';
 import { requireAuth } from '../../middleware/requireAuth.js';
 import { validate } from '../../middleware/validate.js';
 import * as controller from './auth.controller.js';
@@ -30,13 +35,15 @@ authRouter.post(
   controller.login,
 );
 
-// Creates a guest per call, so it shares the tighter auth limiter; the guest
-// ceiling (DEMO_MAX_GUESTS) bounds what many addresses together can create.
-authRouter.post('/demo', authLimiter, controller.demoLogin);
+// Creates a guest per call. Its own per-IP budget, sized for a room of
+// reviewers behind one NAT; the guest ceiling (DEMO_MAX_GUESTS) bounds what
+// many addresses together can create.
+authRouter.post('/demo', demoLimiter, controller.demoLogin);
 // Ends a guest's demo session and deletes the guest. Bearer-authenticated, and
 // only ever acts on the caller's own account.
 authRouter.delete('/demo', requireAuth, controller.endDemo);
-authRouter.post('/refresh', authLimiter, controller.refresh);
+// Every page load refreshes, so this budget is the generous one.
+authRouter.post('/refresh', refreshLimiter, controller.refresh);
 authRouter.post('/logout', controller.logout);
 
 authRouter.get('/me', requireAuth, controller.me);

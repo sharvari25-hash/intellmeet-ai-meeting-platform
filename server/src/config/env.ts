@@ -154,6 +154,54 @@ const envSchema = z.object({
    */
   DEMO_MAX_GUESTS: z.coerce.number().int().min(1).max(10_000).default(200),
 
+  // --- Rate limits for a crowd behind one address ---------------------------
+  //
+  // Reviewers on one college or office network share a public IP, and every
+  // per-IP limit is shared between them. Register and sign-in stay tight
+  // (they hash passwords); these two are sized for a room of people.
+
+  /**
+   * "Try Live Demo" sign-ins per IP per 15 minutes. Each reviewer makes one
+   * or two (a second window to meet themselves in a call).
+   */
+  RATE_LIMIT_DEMO_PER_15_MIN: z.coerce.number().int().min(1).max(10_000).default(60),
+
+  /**
+   * Session refreshes per IP per 15 minutes. Every page load makes one, and
+   * every open tab one more each quarter of an hour.
+   */
+  RATE_LIMIT_REFRESH_PER_15_MIN: z.coerce.number().int().min(1).max(100_000).default(600),
+
+  // --- Live meetings ----------------------------------------------------------
+
+  /**
+   * A live meeting nobody has been connected to for this many minutes is
+   * ended automatically. Closing the tab, a crash or a server restart never
+   * sends "End", and without this the meeting would show as Live forever.
+   * The check runs every five minutes, so one ends 10-15 minutes after the
+   * last person left at the default.
+   */
+  LIVE_MEETING_IDLE_MIN: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 60)
+    .default(10),
+
+  /**
+   * The seeded demo board's sample tasks are put back where the seed left
+   * them once the board has been quiet (no task created, changed or moved)
+   * for this many minutes. Reviewers share the board, so moves are expected;
+   * this keeps the next reviewer's first look tidy without ever resetting
+   * a board somebody is using.
+   */
+  DEMO_BOARD_RESET_IDLE_MIN: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(7 * 24 * 60)
+    .default(60),
+
   // --- Cloudinary (optional) ------------------------------------------------
   // The app runs fully without these; only the upload-signature endpoint is
   // disabled, and it reports SERVICE_UNAVAILABLE rather than failing obscurely.
