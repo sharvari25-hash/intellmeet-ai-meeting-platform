@@ -41,6 +41,11 @@ const TeamDetailPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('@/features/settings/SettingsPage').then((module) => ({ default: module.SettingsPage })),
 );
+const MeetingDetailPage = lazy(() =>
+  import('@/features/meetings/MeetingDetailPage').then((module) => ({
+    default: module.MeetingDetailPage,
+  })),
+);
 // The room carries the WebRTC stack with it, so it is its own chunk: nobody
 // downloads a mesh transport to read the dashboard.
 const RoomPage = lazy(() =>
@@ -100,6 +105,7 @@ export default function App() {
               </ComingSoon>
             }
           />
+          <Route path="meetings/:meetingId" element={<MeetingDetailPage />} />
           <Route path="room/:roomCode" element={<RoomPage />} />
           <Route
             path="tasks"

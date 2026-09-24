@@ -16,6 +16,7 @@ export const meetingKeys = {
   all: ['meetings'] as const,
   list: (teamId?: string) => ['meetings', { teamId: teamId ?? null }] as const,
   byCode: (roomCode: string) => ['meetings', 'code', roomCode] as const,
+  detail: (meetingId: string) => ['meetings', 'detail', meetingId] as const,
 };
 
 export function listMeetings(
