@@ -1,0 +1,181 @@
+# Quality gate for every pull request, and for main after each merge (the
+# README badge shows main).
+#
+#   checks  lint, formatting, typecheck, unit tests with coverage, build
+#   e2e     the Playwright suite against real MongoDB and Redis
+#
+# The two jobs run in parallel, so a PR's result arrives in the time of the
+# slower one. No repository secrets are needed: the unit suites bring their
+# own in-memory MongoDB and a stub Redis, the e2e job uses service containers
+# and a JWT secret generated for the run, and the AI provider is the mock.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to a PR cancels the run still going for the previous commit.
+# Runs on main are never cancelled, so every merge gets a result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, typecheck, unit tests, build
+    runs-on: ubuntu-latest
+    # A dry run of this job on 2 CPUs (a private repository's runner size)
+    # took about 30 minutes, 9 of them the server suite; 45 leaves headroom.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # --ignore-scripts: the same install-script policy as the Docker images
+      # and the development machine (npm 12). Nothing needs one: native tools
+      # come from per-platform packages, and mongodb-memory-server downloads
+      # its mongod on first use instead of at install time.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Locate the mongod download cache
+        run: echo "MONGOMS_DOWNLOAD_DIR=$HOME/.cache/mongodb-binaries" >> "$GITHUB_ENV"
+
+      - name: Cache mongod for mongodb-memory-server
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongod-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      # The server and client import shared's compiled output (shared/dist),
+      # so it is built before anything type-checks or runs against it.
+      - name: Build shared
+        run: npm run build -w @intellmeet/shared
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Formatting
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Server tests with coverage
+        run: npm run test:coverage -w @intellmeet/server
+
+      - name: Client tests with coverage
+        run: npm run test:coverage -w @intellmeet/client
+
+      - name: Production build
+        run: npm run build
+
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        run: node .github/scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            server/coverage
+            client/coverage
+          retention-days: 14
+          if-no-files-found: ignore
+
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      # Playwright starts the API and the Vite dev server itself
+      # (playwright.config.ts: webServer), and they read these.
+      MONGODB_URI: mongodb://localhost:27017/intellmeet
+      REDIS_URL: redis://localhost:6379
+      CORS_ORIGINS: http://localhost:5173
+      CLIENT_URL: http://localhost:5173
+      AI_PROVIDER: mock
+      LOG_LEVEL: warn
+      # Playwright's own headless Chromium (the runner has no Chrome), and the
+      # production build rather than the dev servers: see playwright.config.ts
+      # for why a 2-CPU runner needs both.
+      E2E_CHANNEL: bundled
+      E2E_SERVE: build
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # Generated per run rather than stored: it signs nothing that outlives
+      # the job, so it never needs to be a repository secret.
+      - name: Generate a JWT secret for this run
+        run: echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Cache Playwright's Chromium
+        id: browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-shell-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install headless Chromium and its system libraries
+        if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Install headless Chromium's system libraries
+        if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      # The suite runs against the production build (E2E_SERVE=build).
+      - name: Build
+        run: npm run build
+
+      - name: Seed the demo workspace
+        run: npm run seed -w @intellmeet/server
+
+      - name: Run the Playwright suite
+        run: npm run test:e2e
+
+      - name: Upload the Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 14
+          if-no-files-found: ignore
