@@ -207,8 +207,8 @@ export function LandingPage() {
 
               <p className="mt-3 flex items-start gap-2 text-sm text-muted-foreground">
                 <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-                No sign-up needed. The demo drops you straight into a shared workspace with a team
-                and sample meetings already in it.
+                No sign-up needed. You get your own guest name in a shared demo team that already
+                has colleagues and sample meetings in it.
               </p>
             </div>
 
@@ -280,8 +280,9 @@ export function LandingPage() {
               See it for yourself
             </h2>
             <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
-              The demo workspace is live, seeded and shared. Open it in two browser windows to watch
-              the real-time side work.
+              Every press of Try Live Demo is a different guest in the same team. Open it again in a
+              private window, or on a colleague&apos;s laptop, and you are two people who can meet,
+              chat and record together. Guest accounts tidy themselves away after a few hours.
             </p>
             <Button
               size="lg"

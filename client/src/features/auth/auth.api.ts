@@ -25,9 +25,23 @@ export function register(input: RegisterInput): Promise<AuthResponse> {
   return api('/auth/register', authResponseSchema, { method: 'POST', body: input, ...noRetry });
 }
 
-/** Signs in as the shared, pre-seeded demo account. No credentials needed. */
+/**
+ * "Try Live Demo": creates a guest account of its own in the seeded demo team
+ * and signs in as it. No credentials needed; every call is a new person.
+ */
 export function demoLogin(): Promise<AuthResponse> {
   return api('/auth/demo', authResponseSchema, { method: 'POST', ...noRetry });
+}
+
+/**
+ * Ends a guest's demo session for good: the server deletes the guest with the
+ * meetings it hosted and the teams it created. Real accounts get a 403.
+ *
+ * Unlike the other auth calls this one may refresh and retry, because it is
+ * authenticated by the access token rather than by credentials in the body.
+ */
+export function endDemoSession(): Promise<void> {
+  return apiVoid('/auth/demo', { method: 'DELETE' });
 }
 
 export function logout(): Promise<void> {

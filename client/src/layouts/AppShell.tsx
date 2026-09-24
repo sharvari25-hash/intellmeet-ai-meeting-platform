@@ -4,7 +4,6 @@ import {
   BarChart3,
   KanbanSquare,
   LayoutDashboard,
-  LogOut,
   Menu,
   Settings,
   Users,
@@ -12,22 +11,12 @@ import {
 } from 'lucide-react';
 import { Spinner } from '@/components/Spinner';
 import { NotificationBell } from '@/features/notifications/NotificationBell';
-import { useLogout } from '@/features/auth/useAuth';
 import { ThemeToggle } from '@/components/ThemeToggle';
-import { Avatar, AvatarFallback, AvatarImage, initials } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { useSocketLifecycle } from '@/hooks/useSocketLifecycle';
 import { cn } from '@/lib/utils';
-import { useAuthStore } from '@/stores/authStore';
+import { UserMenu } from './UserMenu';
 
 /**
  * One nav definition, rendered twice.
@@ -86,37 +75,6 @@ function Wordmark() {
       </span>
       IntellMeet
     </span>
-  );
-}
-
-function UserMenu() {
-  const user = useAuthStore((state) => state.user);
-  const logout = useLogout();
-
-  if (!user) return null;
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label={`Account menu for ${user.name}`}>
-          <Avatar>
-            {user.avatarUrl && <AvatarImage src={user.avatarUrl} alt="" />}
-            <AvatarFallback>{initials(user.name)}</AvatarFallback>
-          </Avatar>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel className="flex flex-col gap-0.5">
-          <span className="truncate">{user.name}</span>
-          <span className="truncate text-xs font-normal text-muted-foreground">{user.email}</span>
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => logout.mutate()} disabled={logout.isPending}>
-          <LogOut aria-hidden="true" />
-          Sign out
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
