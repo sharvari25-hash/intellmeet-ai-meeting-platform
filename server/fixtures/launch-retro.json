@@ -117,6 +117,28 @@
       "text": "Yes. I'll book a follow-up review for next month. Thanks all, good retro."
     }
   ],
+  "chat": [
+    {
+      "at": 20,
+      "sender": "Grace Hopper",
+      "text": "Rollout dashboard from launch night, for anyone who wants to relive it: all regions green inside 50 minutes."
+    },
+    {
+      "at": 48,
+      "sender": "Alan Turing",
+      "text": "Screenshot of the pricing page still showing the old annual price is attached to the support ticket."
+    },
+    {
+      "at": 150,
+      "sender": "Ada Lovelace",
+      "text": "For the record, the current on-call rota lives in the ops wiki, which is half of the problem."
+    },
+    {
+      "at": 210,
+      "sender": "Grace Hopper",
+      "text": "Starting the launch checklist doc now. Comments welcome once I share it."
+    }
+  ],
   "reference": {
     "summary": "The team held a retrospective on the Q3 pricing launch. The deploy went smoothly with zero downtime, and marketing's announcement was well coordinated. Problems were an outdated price on the pricing page for about three hours, which led to refund requests, help-centre docs merged two days after launch, and confusion over who was on call. The team agreed on a launch checklist, a rule that docs must be merged before code freeze, and publishing the on-call rota a week ahead.",
     "keyDecisions": [

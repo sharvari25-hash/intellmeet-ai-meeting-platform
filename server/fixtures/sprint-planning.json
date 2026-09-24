@@ -146,6 +146,33 @@
       "text": "Great. Thanks everyone, see you at stand-up."
     }
   ],
+  "chat": [
+    {
+      "at": 18,
+      "sender": "Ada Lovelace",
+      "text": "Sprint 13 burndown for reference: 31 of 38 points closed, all 7 missed points were Outlook."
+    },
+    {
+      "at": 40,
+      "sender": "Alan Turing",
+      "text": "The upload bug is INT-482. Repro steps and the network throttling profile are in the ticket."
+    },
+    {
+      "at": 95,
+      "sender": "Ada Lovelace",
+      "text": "The approved Google consent screen config is in the shared drive under Calendar / OAuth."
+    },
+    {
+      "at": 205,
+      "sender": "Grace Hopper",
+      "text": "+1 to freezing scope on Wednesdays."
+    },
+    {
+      "at": 255,
+      "sender": "Demo User",
+      "text": "Sprint goals doc is up. I will send it to the stakeholders straight after this call."
+    }
+  ],
   "reference": {
     "summary": "The team reviewed sprint 13, which closed 31 of 38 points; the missed work was the Outlook calendar integration, which needs an unexpected admin consent flow. A recording upload bug that loses about one in twenty uploads on slow connections was treated as the top priority. The team chose to build Google Calendar only this sprint and move Outlook to the backlog, rejecting a proposal to build both in parallel. Sprint scope will now be frozen on Wednesdays. Moving the sprint demo to Thursday was raised but deferred until stakeholders are consulted.",
     "keyDecisions": [

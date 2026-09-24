@@ -98,6 +98,33 @@
       "text": "Probably, but not in this review. Let's park editing and come back to it after Grace's sessions. Thanks everyone."
     }
   ],
+  "chat": [
+    {
+      "at": 12,
+      "sender": "Alan Turing",
+      "text": "Both mock-ups are in the design file: option A (one scrolling page) and option B (tabs)."
+    },
+    {
+      "at": 50,
+      "sender": "Grace Hopper",
+      "text": "Interview notes behind the action-items-first point are in the research folder."
+    },
+    {
+      "at": 88,
+      "sender": "Ada Lovelace",
+      "text": "WCAG AA needs 4.5:1 for badge text. The amber on white measures about 2.9:1."
+    },
+    {
+      "at": 135,
+      "sender": "Alan Turing",
+      "text": "+1 to copy summary first and PDF later."
+    },
+    {
+      "at": 160,
+      "sender": "Grace Hopper",
+      "text": "Booking the usability sessions for next Tuesday and Wednesday."
+    }
+  ],
   "reference": {
     "summary": "The team reviewed two layouts for the meeting summary page and chose the tabbed design, with action items placed right after the summary and before the transcript, because users look for their own action items first and long transcripts are hard to scroll past on phones. Ada raised a concern that the status badge colours may fail contrast checks. A copy-summary button will ship in the first version, with PDF export later. Grace will validate the prototype in usability sessions. Whether transcripts should be editable was deferred.",
     "keyDecisions": [
