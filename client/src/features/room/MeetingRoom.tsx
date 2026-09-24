@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SPEAKING_THRESHOLD, createLevelMeter, type LevelMeter } from '@/lib/webrtc/audioLevel';
 import { getScreenStream, stopStream } from '@/lib/webrtc/devices';
+import { useTeamPeople } from '@/features/mentions/useTeamPeople';
 import { useAuthStore } from '@/stores/authStore';
 import { ChatPanel } from './ChatPanel';
 import { ParticipantsPanel } from './ParticipantsPanel';
@@ -72,6 +73,10 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
   }, [media]);
 
   const room = useMeetingRoom({ meeting, localStream: media.stream, onForceMute: forceMute });
+
+  // Anyone in the team can be @mentioned in the chat, whether or not they
+  // are in the room: they get a notification either way.
+  const teamPeople = useTeamPeople(meeting.teamId);
 
   const isHost = room.self?.isHost ?? meeting.isHost;
   const indicator = useRecordingIndicator(meeting.id);
@@ -392,6 +397,7 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
               selfUserId={user?.id}
               onSend={room.sendChat}
               onTyping={room.notifyTyping}
+              people={teamPeople}
             />
           </TabsContent>
 
