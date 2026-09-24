@@ -6,17 +6,45 @@ import {
   type Meeting,
   type MeetingIntelligence,
   type RecordingUploadTarget,
+  type UpdateInsightInput,
 } from '@intellmeet/shared';
-import { api } from '@/lib/apiClient';
+import { api, apiFetch } from '@/lib/apiClient';
 
 const meetingResponseSchema = z.object({ meeting: meetingSchema });
 
 export const aiKeys = {
   intelligence: (meetingId: string) => ['meetings', meetingId, 'intelligence'] as const,
+  recording: (meetingId: string) => ['meetings', meetingId, 'recording'] as const,
 };
 
 export function getMeetingIntelligence(meetingId: string): Promise<MeetingIntelligence> {
   return api(`/meetings/${meetingId}/intelligence`, meetingIntelligenceSchema);
+}
+
+/** The host's corrections. Answers with the whole updated intelligence. */
+export function updateInsight(
+  meetingId: string,
+  input: UpdateInsightInput,
+): Promise<MeetingIntelligence> {
+  return api(`/meetings/${meetingId}/insight`, meetingIntelligenceSchema, {
+    method: 'PATCH',
+    body: input,
+  });
+}
+
+/**
+ * The recording stored on our own API (the no-Cloudinary path), as a Blob.
+ *
+ * An `<audio src>` cannot send the bearer token, and the token deliberately
+ * never goes in a URL, where it would land in logs and browser history. So
+ * the file is fetched with the token and handed to the player as an object
+ * URL. At 32 kbps an hour is about 14 MB, fine to hold in memory. A
+ * Cloudinary recording needs none of this: its URL plays directly.
+ */
+export async function fetchRecordingAudio(meetingId: string): Promise<Blob> {
+  const response = await apiFetch(`/meetings/${meetingId}/recording/audio`);
+  if (!response.ok) throw new Error(`The recording could not be loaded (HTTP ${response.status}).`);
+  return response.blob();
 }
 
 export function retryAiProcessing(meetingId: string): Promise<Meeting> {
