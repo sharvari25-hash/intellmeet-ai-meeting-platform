@@ -23,9 +23,32 @@ describe('notificationLink', () => {
     ).toBe('/app/room/ABC2345');
   });
 
+  it('opens the task on its board for an assignment or a comment mention', () => {
+    const payload = { taskId: 't1', boardId: 'b1', teamId: 'team' };
+    expect(notificationLink({ ...base, type: 'task_assigned', payload })).toBe(
+      '/app/tasks?board=b1&task=t1',
+    );
+    expect(notificationLink({ ...base, type: 'mention', payload })).toBe(
+      '/app/tasks?board=b1&task=t1',
+    );
+  });
+
+  it('opens the chat log for a mention in a meeting’s chat', () => {
+    expect(
+      notificationLink({
+        ...base,
+        type: 'mention',
+        payload: { meetingId: 'abc', roomCode: 'ABC2345', messageId: 'm' },
+      }),
+    ).toBe('/app/meetings/abc?tab=chat');
+  });
+
   it('goes nowhere when the payload is missing or malformed', () => {
     expect(notificationLink(base)).toBeNull();
     expect(notificationLink({ ...base, payload: { meetingId: 42 } })).toBeNull();
     expect(notificationLink({ ...base, type: 'invite', payload: { meetingId: 'abc' } })).toBeNull();
+    expect(
+      notificationLink({ ...base, type: 'task_assigned', payload: { taskId: 't1' } }),
+    ).toBeNull();
   });
 });
