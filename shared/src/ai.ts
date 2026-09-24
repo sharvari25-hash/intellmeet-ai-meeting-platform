@@ -79,8 +79,24 @@ export const transcriptSchema = z.object({
 export type Transcript = z.infer<typeof transcriptSchema>;
 
 export const ACTION_ITEM_STATUSES = ['open', 'done'] as const;
+export const actionItemStatusSchema = z.enum(ACTION_ITEM_STATUSES);
+export type ActionItemStatus = z.infer<typeof actionItemStatusSchema>;
+
+/** A calendar date, `YYYY-MM-DD`, that actually exists (no 2026-02-30). */
+export const isoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a YYYY-MM-DD date')
+  .refine((value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().startsWith(value);
+  }, 'Not a real date');
 
 export const actionItemSchema = z.object({
+  /**
+   * Stable across edits, so a Kanban task (Phase 8) can point at the item it
+   * came from even after the host rewords or reorders the list.
+   */
+  id: z.string(),
   text: z.string(),
   /** The name as the model heard it, kept even when it matches nobody. */
   assigneeName: z.string().nullable(),
@@ -101,8 +117,50 @@ export const meetingInsightSchema = z.object({
   actionItems: z.array(actionItemSchema),
   provider: z.string(),
   createdAt: z.string(),
+  /** When the host last corrected the AI's output; null if untouched. */
+  editedAt: z.string().nullable(),
+  editedByName: z.string().nullable(),
 });
 export type MeetingInsight = z.infer<typeof meetingInsightSchema>;
+
+/**
+ * One action item as the host submits it.
+ *
+ * `id` is present for an item that already existed and absent for a new one;
+ * the server keeps an existing item's Kanban link by it. `assigneeName` only
+ * counts when there is no `assigneeId` - a free-text owner who has no account
+ * - because a matched owner's name always comes from their account.
+ */
+export const actionItemInputSchema = z.object({
+  id: z.string().max(64).optional(),
+  text: z.string().trim().min(1, 'Describe the action item').max(500),
+  assigneeId: objectIdSchema.nullable(),
+  assigneeName: z.string().trim().max(80).nullable(),
+  dueDate: isoDateSchema.nullable(),
+  status: actionItemStatusSchema,
+});
+export type ActionItemInput = z.infer<typeof actionItemInputSchema>;
+
+/**
+ * The host's corrections to the AI output (`PATCH /meetings/:id/insight`).
+ *
+ * Lists are sent whole rather than patched item by item: the edit form holds
+ * the full list anyway, and "replace" has no ordering or merge semantics to
+ * get wrong. Omitted fields are left as they are.
+ */
+export const updateInsightSchema = z
+  .object({
+    summary: z.string().trim().min(1, 'The summary cannot be empty').max(5000).optional(),
+    keyDecisions: z
+      .array(z.string().trim().min(1, 'A decision cannot be empty').max(500))
+      .max(50)
+      .optional(),
+    actionItems: z.array(actionItemInputSchema).max(100).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Provide at least one field to update',
+  });
+export type UpdateInsightInput = z.infer<typeof updateInsightSchema>;
 
 /** Everything the meeting page needs about the AI pipeline, in one request. */
 export const meetingIntelligenceSchema = z.object({
