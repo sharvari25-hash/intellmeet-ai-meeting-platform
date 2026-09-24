@@ -14,7 +14,7 @@ import { loadMeetingFixtures, seedDemoMeetings, weeksToShift } from './demo.meet
 const HOUR = 60 * 60 * 1000;
 const ago = (hours: number) => new Date(Date.now() - hours * HOUR);
 
-/** The shared demo account, plus a real account that must never be swept. */
+/** The seeded demo persona, plus a real account that must never be swept. */
 async function seedAccounts() {
   const demo = await User.create({
     name: 'Demo User',
@@ -87,7 +87,7 @@ describe('demo workspace cleanup', () => {
     const result = await cleanupDemoData({ olderThanHours: 6 });
 
     // This is the whole reason the job is age-based rather than a reset
-    // button: reviewers share one account and one of them is always mid-call.
+    // button: reviewers share one workspace and one of them is always mid-call.
     expect(result.meetings).toBe(0);
     expect(await Meeting.countDocuments({})).toBe(1);
   });
@@ -167,7 +167,7 @@ describe('demo workspace cleanup', () => {
 
     const result = await cleanupDemoData({ olderThanHours: 6 });
 
-    expect(result).toEqual({ meetings: 0, messages: 0, teams: 0, notifications: 0 });
+    expect(result).toEqual({ guests: 0, meetings: 0, messages: 0, teams: 0, notifications: 0 });
     expect(await Team.countDocuments({ slug: 'platform' })).toBe(1);
     expect(await Meeting.countDocuments({ roomCode: 'REAL123' })).toBe(1);
   });
@@ -205,6 +205,7 @@ describe('demo workspace cleanup', () => {
     });
 
     await expect(cleanupDemoData({ olderThanHours: 0 })).resolves.toEqual({
+      guests: 0,
       meetings: 0,
       messages: 0,
       teams: 0,
