@@ -82,6 +82,7 @@ export function intelligence(overrides: Partial<MeetingIntelligence> = {}): Meet
           dueDate: '2026-09-18',
           status: 'open',
           taskId: null,
+          task: null,
         },
         {
           id: 'a2',
@@ -91,6 +92,7 @@ export function intelligence(overrides: Partial<MeetingIntelligence> = {}): Meet
           dueDate: null,
           status: 'open',
           taskId: null,
+          task: null,
         },
       ],
       provider: 'mock',
@@ -161,6 +163,7 @@ export function serveMeeting(api: FakeApi = {}) {
                   dueDate: item.dueDate,
                   status: item.status,
                   taskId: null,
+                  task: null,
                 })),
               }
             : {}),

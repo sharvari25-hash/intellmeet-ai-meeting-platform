@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import { z } from 'zod';
 import { transcriptSegmentSchema } from '@intellmeet/shared';
 import { matchAssignee } from '../../lib/ai/assignee.js';
-import { generateCode } from '../../lib/ids.js';
+import { generateCode, stableObjectId } from '../../lib/ids.js';
 import { MeetingInsight } from '../ai/insight.model.js';
 import { Transcript } from '../ai/transcript.model.js';
 import { Message } from '../chat/message.model.js';
@@ -100,6 +100,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export function weeksToShift(meetingDate: Date, now: Date, minDaysAgo: number): number {
   const target = now.getTime() - minDaysAgo * DAY_MS;
   return Math.floor((target - meetingDate.getTime()) / (7 * DAY_MS));
+}
+
+/**
+ * The id of a sample meeting's action item: the same on every seed and every
+ * machine. Seeded tasks point at these, and so do tasks reviewers create from
+ * the samples, so re-running the seed must not change them.
+ */
+export function sampleActionItemId(fixtureKey: string, index: number): Types.ObjectId {
+  return stableObjectId(`${fixtureKey}:action:${index}`);
 }
 
 function shiftIsoDate(isoDate: string, days: number): string {
@@ -223,21 +232,34 @@ export async function seedDemoMeetings(options: {
     });
     if (chat.length > 0) await Message.collection.insertMany(chat);
 
+    // Tasks already made from these items (seeded ones, or a reviewer's)
+    // keep their link: the ids are stable, so the links can be carried over.
+    const previous = await MeetingInsight.findOne({ meetingId: meeting._id })
+      .select('actionItems._id actionItems.taskId')
+      .lean();
+    const taskIds = new Map(
+      (previous?.actionItems ?? []).flatMap((item) =>
+        item._id && item.taskId ? [[item._id.toString(), item.taskId] as const] : [],
+      ),
+    );
+
     await MeetingInsight.findOneAndUpdate(
       { meetingId: meeting._id },
       {
         $set: {
           summary: fixture.reference.summary,
           keyDecisions: fixture.reference.keyDecisions,
-          actionItems: fixture.reference.actionItems.map((item) => {
+          actionItems: fixture.reference.actionItems.map((item, index) => {
             const match = matchAssignee(item.assigneeName, attendees);
+            const id = sampleActionItemId(fixture.key, index);
             return {
+              _id: id,
               text: item.text,
               assigneeName: match?.name ?? item.assigneeName,
               assigneeId: match ? new Types.ObjectId(match.id) : null,
               dueDate: item.dueDate ? shiftIsoDate(item.dueDate, shiftDays) : null,
               status: 'open',
-              taskId: null,
+              taskId: taskIds.get(id.toString()) ?? null,
             };
           }),
           provider: 'seed',

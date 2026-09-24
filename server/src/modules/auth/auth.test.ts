@@ -468,6 +468,83 @@ describe('login rate limiting', () => {
       .send({ email: bystander.email, password: bystander.password })
       .expect(200);
   });
+
+  it('does not count successful sign-ins, so a room can share one account', async () => {
+    const shared = await registerUser(app);
+
+    // Several reviewers on one network signing in as the same seeded
+    // team-mate: a correct password is not a guess.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await request(app)
+        .post('/api/auth/login')
+        .send({ email: shared.email, password: shared.password })
+        .expect(200);
+    }
+
+    // Failures still count, and still lock the address out of that account.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await request(app)
+        .post('/api/auth/login')
+        .send({ email: shared.email, password: 'WrongPassword123' })
+        .expect(401);
+    }
+    await request(app)
+      .post('/api/auth/login')
+      .send({ email: shared.email, password: shared.password })
+      .expect(429);
+  });
+});
+
+describe('rate limits for a room of reviewers behind one address', () => {
+  it('lets far more than 30 page loads refresh their session', async () => {
+    // Every page load refreshes once; the old shared auth budget of 30 per
+    // 15 minutes ran out with four or five reviewers on one network, and a
+    // rejected refresh looks to the person like being signed out.
+    for (let load = 0; load < 45; load += 1) {
+      await request(app).post('/api/auth/refresh').expect(401);
+    }
+  });
+
+  it('still bounds refreshes from one address', async () => {
+    const limit = env.RATE_LIMIT_REFRESH_PER_15_MIN;
+    env.RATE_LIMIT_REFRESH_PER_15_MIN = 3;
+
+    try {
+      for (let load = 0; load < 3; load += 1) {
+        await request(app).post('/api/auth/refresh').expect(401);
+      }
+      const blocked = await request(app).post('/api/auth/refresh').expect(429);
+      expect(blocked.body.error.code).toBe('RATE_LIMITED');
+    } finally {
+      env.RATE_LIMIT_REFRESH_PER_15_MIN = limit;
+    }
+  });
+
+  it('gives demo sign-ins a budget of their own, sized for a room', async () => {
+    await seedDemoWorkspace();
+
+    for (let reviewer = 0; reviewer < 35; reviewer += 1) await demoSignIn();
+
+    // ...without spending the register/sign-in budget, which stays tight.
+    await registerUser(app);
+  });
+
+  it('still bounds demo sign-ins from one address', async () => {
+    await seedDemoWorkspace();
+    const limit = env.RATE_LIMIT_DEMO_PER_15_MIN;
+    env.RATE_LIMIT_DEMO_PER_15_MIN = 2;
+
+    try {
+      await demoSignIn();
+      await demoSignIn();
+
+      const blocked = await request(app).post('/api/auth/demo').expect(429);
+      expect(blocked.body.error.message).toMatch(/demo sign-ins/i);
+      expect(await User.countDocuments({ authProvider: 'guest' })).toBe(2);
+    } finally {
+      env.RATE_LIMIT_DEMO_PER_15_MIN = limit;
+    }
+  });
 });
 
 /**

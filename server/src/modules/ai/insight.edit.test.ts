@@ -11,6 +11,8 @@ import {
   type TestUser,
 } from '../../test/fixtures.js';
 import { Meeting } from '../meetings/meeting.model.js';
+import { ensureDefaultBoard } from '../tasks/board.service.js';
+import { Task } from '../tasks/task.model.js';
 import { MeetingInsight } from './insight.model.js';
 
 const app = createApp();
@@ -36,7 +38,20 @@ async function summarisedMeeting() {
   await request(app).post(`/api/meetings/${meetingId}/end`).set('Authorization', bearer(host));
   await Meeting.updateOne({ _id: meetingId }, { $set: { aiStatus: 'done' } });
 
-  const taskId = new Types.ObjectId();
+  // A real task on the team's board: the page only reports links to tasks
+  // that still exist.
+  const board = await ensureDefaultBoard(teamId);
+  const firstColumn = board.columns[0];
+  if (!firstColumn) throw new Error('Expected default columns');
+  const { _id: taskId } = await Task.create({
+    boardId: board._id,
+    teamId,
+    columnId: firstColumn._id,
+    title: 'Write the release notes',
+    order: 1024,
+    createdBy: new Types.ObjectId(host.id),
+  });
+
   await MeetingInsight.create({
     meetingId,
     summary: 'The team reviewd the sprint.',
@@ -145,6 +160,8 @@ describe('PATCH /api/meetings/:id/insight', () => {
       status: 'done',
       assigneeId: mate.id,
       taskId: taskId.toString(),
+      // Where that task is on the board, read live.
+      task: { id: taskId.toString(), columnTitle: 'To Do', isDone: false },
     });
 
     expect(items[2]).toMatchObject({ assigneeId: host.id, assigneeName: 'Grace Hopper' });

@@ -1,5 +1,6 @@
 import {
   SOCKET_EVENTS,
+  boardRoomSchema,
   chatSendSchema,
   chatTypingSchema,
   hostMuteSchema,
@@ -16,6 +17,9 @@ import type { ZodType } from 'zod';
 import { AppError, isAppError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { createMessage } from '../modules/chat/chat.service.js';
+import { createMentionNotifications } from '../modules/notifications/mentions.js';
+import { deliverNotifications } from '../modules/notifications/notification.deliver.js';
+import { getBoardForMember } from '../modules/tasks/board.service.js';
 import {
   endMeeting,
   getMeetingForMember,
@@ -32,6 +36,7 @@ import {
   updateParticipantMedia,
   type StoredParticipant,
 } from './presence.js';
+import { pruneDisconnected } from './rooms.js';
 import type { AppServer, AppSocket } from './socket.types.js';
 
 /**
@@ -185,6 +190,14 @@ export function registerHandlers(io: AppServer, socket: AppSocket): void {
     await recordParticipantJoin(meetingId, user.id);
     trackJoin(socket, meetingId);
 
+    // Entries left behind by sockets that died without leaving - above all a
+    // server restart, after which everyone rejoins on a new socket - go before
+    // the newcomer is told who is here. Otherwise it would offer to peers that
+    // no longer exist. Best effort: a slow instance must not block the join.
+    await pruneDisconnected(io, meetingId).catch((error: unknown) => {
+      logger.warn({ err: error, meetingId }, '[socket] could not prune the room roster');
+    });
+
     // Tell the newcomer who is already here, so it can open a peer connection
     // to each of them. `selfSocketId` lets it exclude itself from the mesh.
     const [participants, recording] = await Promise.all([
@@ -289,13 +302,42 @@ export function registerHandlers(io: AppServer, socket: AppSocket): void {
       throw AppError.tooManyRequests('You are sending messages too quickly');
     }
 
-    await getMeetingForMember(meetingId, user.id);
+    const meeting = await getMeetingForMember(meetingId, user.id);
 
     // Persist before broadcasting: a message everybody saw but that vanishes
     // on refresh is worse than one that arrives a few milliseconds later.
     const message = await createMessage(meetingId, user.id, text);
 
     io.to(socketRooms.meeting(meetingId)).emit(SOCKET_EVENTS.CHAT_MESSAGE, message);
+
+    // "@Grace can you check?" notifies Grace, in the room or not. After the
+    // broadcast, and unable to fail it: the message has been sent either way.
+    const mentions = await createMentionNotifications({
+      text: message.text,
+      authorId: user.id,
+      teamId: meeting.teamId.toString(),
+      where: `“${meeting.title}”`,
+      payload: {
+        meetingId,
+        teamId: meeting.teamId.toString(),
+        roomCode: meeting.roomCode,
+        messageId: message.id,
+      },
+    });
+    deliverNotifications(io, mentions);
+  });
+
+  // --- Kanban boards ---------------------------------------------------------
+
+  on(socket, SOCKET_EVENTS.BOARD_JOIN, boardRoomSchema, async ({ boardId }) => {
+    // Like a meeting room: the handshake says who you are, never which
+    // boards you may watch. Re-checked against the team on every join.
+    await getBoardForMember(boardId, user.id);
+    await socket.join(socketRooms.board(boardId));
+  });
+
+  on(socket, SOCKET_EVENTS.BOARD_LEAVE, boardRoomSchema, async ({ boardId }) => {
+    await socket.leave(socketRooms.board(boardId));
   });
 
   on(socket, SOCKET_EVENTS.CHAT_TYPING, chatTypingSchema, ({ meetingId }) => {

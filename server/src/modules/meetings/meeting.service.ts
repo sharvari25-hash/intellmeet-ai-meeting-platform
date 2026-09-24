@@ -17,6 +17,7 @@ import { Message } from '../chat/message.model.js';
 import { Notification } from '../notifications/notification.model.js';
 import { Transcript } from '../ai/transcript.model.js';
 import { deleteLocalRecording } from '../recordings/recording.storage.js';
+import { Task } from '../tasks/task.model.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
 import { describeMatches, loadPreviews, rankMeetings } from './meeting.history.js';
@@ -443,6 +444,7 @@ export async function deleteMeeting(meetingId: string, userId: string): Promise<
 /**
  * Removes everything that hangs off these meetings: chat, transcripts,
  * insights, notifications that link to them, and locally stored recordings.
+ * Tasks made from them stay, unlinked.
  *
  * Shared by host deletion and the demo cleanup, so neither can forget a
  * collection that a later phase adds. A notification pointing at a deleted
@@ -462,6 +464,12 @@ export async function deleteMeetingArtifacts(
     MeetingInsight.deleteMany({ meetingId: { $in: ids } }),
     // The payload stores ids as strings (it is free-form JSON).
     Notification.deleteMany({ 'payload.meetingId': { $in: ids.map((id) => id.toString()) } }),
+    // Tasks made from the meeting's action items are work in their own right
+    // and stay on the board; only the link to a meeting that is gone goes.
+    Task.updateMany(
+      { sourceMeetingId: { $in: ids } },
+      { $set: { sourceMeetingId: null, sourceActionItemId: null }, $inc: { version: 1 } },
+    ),
   ]);
 
   await Promise.all(
@@ -481,29 +489,38 @@ export async function deleteMeetingArtifacts(
  * the attendance list stays one entry per person.
  */
 export async function recordParticipantJoin(meetingId: string, userId: string): Promise<void> {
+  const now = new Date();
   const existing = await Meeting.findOne({
     _id: meetingId,
     'participants.userId': userId,
   }).select('_id');
 
+  // Both paths stamp `lastActiveAt`: somebody is in the room right now, which
+  // is what keeps the abandoned-meeting sweep away from it.
   if (existing) {
     await Meeting.updateOne(
       { _id: meetingId, 'participants.userId': userId },
-      { $set: { 'participants.$.leftAt': null } },
+      { $set: { 'participants.$.leftAt': null, lastActiveAt: now } },
     );
     return;
   }
 
   await Meeting.updateOne(
     { _id: meetingId },
-    { $push: { participants: { userId: new Types.ObjectId(userId), joinedAt: new Date() } } },
+    {
+      $push: { participants: { userId: new Types.ObjectId(userId), joinedAt: now } },
+      $set: { lastActiveAt: now },
+    },
   );
 }
 
 export async function recordParticipantLeave(meetingId: string, userId: string): Promise<void> {
+  const now = new Date();
+  // Somebody was in the room until this moment. When they were the last one,
+  // this is when the idle clock starts.
   await Meeting.updateOne(
     { _id: meetingId, 'participants.userId': userId },
-    { $set: { 'participants.$.leftAt': new Date() } },
+    { $set: { 'participants.$.leftAt': now, lastActiveAt: now } },
   );
 }
 

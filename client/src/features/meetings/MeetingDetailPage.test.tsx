@@ -60,10 +60,11 @@ describe('<MeetingDetailPage />', () => {
     // A name that matched nobody in the meeting is shown, but flagged.
     expect(screen.getByText(/Sam \(not a participant\)/)).toBeInTheDocument();
 
-    // Task boards are Phase 8: the button is there, disabled, and explained.
-    const [createTask] = screen.getAllByRole('button', { name: 'Create task' });
-    expect(createTask).toBeDisabled();
-    expect(createTask).toHaveAccessibleDescription(/arrives with the task board/);
+    // Each item can become a task, and both at once.
+    expect(
+      screen.getByRole('button', { name: 'Create a task for “Fix the upload retry bug”' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Create tasks for all (2)' })).toBeEnabled();
   });
 
   it('searches the transcript and highlights what it found', async () => {

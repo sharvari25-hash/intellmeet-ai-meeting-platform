@@ -1,11 +1,16 @@
 import type { Types } from 'mongoose';
-import { env, isTest } from '../../config/env.js';
+import { env } from '../../config/env.js';
 import { cacheDel, cacheKeys } from '../../lib/cache.js';
 import { logger } from '../../lib/logger.js';
 import { Message } from '../chat/message.model.js';
 import { Meeting } from '../meetings/meeting.model.js';
 import { deleteMeetingArtifacts } from '../meetings/meeting.service.js';
 import { Notification } from '../notifications/notification.model.js';
+import { Board } from '../tasks/board.model.js';
+import { TaskComment } from '../tasks/comment.model.js';
+import { deleteTasksWhere } from '../tasks/task.cleanup.js';
+import { announceBoardRefresh } from '../tasks/task.events.js';
+import { Task } from '../tasks/task.model.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
 import { DEMO_TEAM_SLUG } from './demo.constants.js';
@@ -15,6 +20,7 @@ export interface DemoCleanupResult {
   meetings: number;
   messages: number;
   teams: number;
+  tasks: number;
   notifications: number;
 }
 
@@ -23,6 +29,7 @@ const EMPTY: DemoCleanupResult = {
   meetings: 0,
   messages: 0,
   teams: 0,
+  tasks: 0,
   notifications: 0,
 };
 
@@ -32,23 +39,25 @@ function add(a: DemoCleanupResult, b: DemoCleanupResult): DemoCleanupResult {
     meetings: a.meetings + b.meetings,
     messages: a.messages + b.messages,
     teams: a.teams + b.teams,
+    tasks: a.tasks + b.tasks,
     notifications: a.notifications + b.notifications,
   };
 }
 
 /**
  * Deletes the given teams and every meeting matching the filter or held in
- * one of those teams, with everything that hangs off them.
+ * one of those teams, with everything that hangs off them - their boards and
+ * tasks included.
  *
  * Ordered deliberately: children before parents, so a crash halfway through
  * leaves orphaned parents (harmless, retried next run) rather than orphaned
- * children pointing at ids that no longer resolve. Seeded meetings are never
- * matched, whatever the filter says.
+ * children pointing at ids that no longer resolve. Seeded meetings and seeded
+ * tasks are never matched, whatever the filter says.
  */
 async function purge(
   meetingFilter: Record<string, unknown> | null,
   teamIds: Types.ObjectId[],
-): Promise<Pick<DemoCleanupResult, 'meetings' | 'messages' | 'teams'>> {
+): Promise<Pick<DemoCleanupResult, 'meetings' | 'messages' | 'teams' | 'tasks'>> {
   const conditions = [
     ...(meetingFilter ? [meetingFilter] : []),
     ...(teamIds.length > 0 ? [{ teamId: { $in: teamIds } }] : []),
@@ -77,6 +86,15 @@ async function purge(
       ? (await Meeting.deleteMany({ _id: { $in: meetingIds } })).deletedCount
       : 0;
 
+  // A team that goes takes its boards and every task on them. The seeded
+  // team is never in `teamIds`, and `deleteTasksWhere` skips seeded tasks
+  // regardless.
+  let tasks = 0;
+  if (teamIds.length > 0) {
+    tasks = (await deleteTasksWhere({ teamId: { $in: teamIds } })).tasks;
+    await Board.deleteMany({ teamId: { $in: teamIds }, seeded: { $ne: true } });
+  }
+
   const teams =
     teamIds.length > 0 ? (await Team.deleteMany({ _id: { $in: teamIds } })).deletedCount : 0;
 
@@ -91,7 +109,7 @@ async function purge(
     );
   }
 
-  return { meetings: meetingCount, messages, teams };
+  return { meetings: meetingCount, messages, teams, tasks };
 }
 
 /**
@@ -99,10 +117,12 @@ async function purge(
  *
  * A guest has no password, so once its session is over nobody can ever act
  * as it again: the meetings it hosted could not be ended, edited or deleted,
- * and the teams it owned would have no admin. Those go with it, **whatever
- * their age**. What it merely took part in stays - a meeting somebody else
- * hosted keeps its history, and a message the guest sent keeps its place in
- * that conversation (shown as "Unknown user").
+ * the teams it owned would have no admin, and the tasks it created could not
+ * be deleted by their creator. Those go with it, **whatever their age**, and
+ * so do its task comments. What it merely took part in stays - a meeting
+ * somebody else hosted keeps its history, a message the guest sent keeps its
+ * place in that conversation (shown as "Unknown user"), and a task somebody
+ * else gave it stays on the board, unassigned.
  *
  * Used by the periodic sweep for inactive guests, and by `DELETE
  * /api/auth/demo` when a guest ends their own session. Only ever deletes
@@ -123,6 +143,19 @@ export async function removeGuests(guestIds: Types.ObjectId[]): Promise<DemoClea
     ownedTeams.map((team) => team._id),
   );
 
+  // Their work on boards they do not own - above all the shared demo board.
+  // Tasks they created go (never a seeded one: `deleteTasksWhere` skips
+  // those); tasks somebody else gave them stay, with nobody assigned; their
+  // comments go.
+  const created = await deleteTasksWhere({ createdBy: { $in: guestIds } });
+  const assigned = await Task.find({ assigneeId: { $in: guestIds } }).distinct('boardId');
+  await Task.updateMany(
+    { assigneeId: { $in: guestIds } },
+    { $set: { assigneeId: null }, $inc: { version: 1 } },
+  );
+  const commentedOn = await TaskComment.find({ authorId: { $in: guestIds } }).distinct('boardId');
+  await TaskComment.deleteMany({ authorId: { $in: guestIds } });
+
   // Out of every team they joined, above all the seeded one, whose member
   // list would otherwise grow by one dead entry per demo sign-in.
   await Team.updateMany(
@@ -135,7 +168,13 @@ export async function removeGuests(guestIds: Types.ObjectId[]): Promise<DemoClea
   const guests = (await User.deleteMany({ _id: { $in: guestIds }, authProvider: 'guest' }))
     .deletedCount;
 
-  return { guests, notifications, ...purged };
+  // Anyone looking at a board they changed sees it without them straight away.
+  announceBoardRefresh([
+    ...created.boardIds,
+    ...[...assigned, ...commentedOn].map((id) => id.toString()),
+  ]);
+
+  return { guests, notifications, ...purged, tasks: purged.tasks + created.tasks };
 }
 
 /**
@@ -177,9 +216,10 @@ async function findIdleGuests(cutoff: Date): Promise<Types.ObjectId[]> {
  *
  * Three things are never touched:
  *
- * - **The seeded team**, matched by slug. It is the thing the demo is *for*.
- * - **Seeded meetings** (`seeded: true`), the sample history with transcripts
- *   and summaries that the landing page promises is already there.
+ * - **The seeded team**, matched by slug, and with it its board. It is the
+ *   thing the demo is *for*.
+ * - **Seeded meetings and seeded tasks** (`seeded: true`), the sample history
+ *   and the sample board that the landing page promises are already there.
  * - **Anything recent, and any guest still active.** This is the whole reason
  *   the job is age-based rather than a reset button: a reviewer mid-demo must
  *   never have the room deleted underneath them.
@@ -215,11 +255,24 @@ export async function cleanupDemoData(
       staleTeams.map((team) => team._id),
     );
 
+    // Old tasks demo accounts left on boards that stay, such as the shared
+    // demo board. Seeded sample tasks are never matched.
+    const staleTasks = await deleteTasksWhere({
+      createdBy: { $in: demoIds },
+      createdAt: { $lt: cutoff },
+    });
+    announceBoardRefresh(staleTasks.boardIds);
+
     const notifications = (
       await Notification.deleteMany({ userId: { $in: demoIds }, createdAt: { $lt: cutoff } })
     ).deletedCount;
 
-    result = add(result, { ...EMPTY, ...purged, notifications });
+    result = add(result, {
+      ...EMPTY,
+      ...purged,
+      tasks: purged.tasks + staleTasks.tasks,
+      notifications,
+    });
   }
 
   if (Object.values(result).some((count) => count > 0)) {
@@ -227,49 +280,4 @@ export async function cleanupDemoData(
   }
 
   return result;
-}
-
-let timer: NodeJS.Timeout | undefined;
-
-/**
- * Runs the cleanup periodically for as long as the process lives.
- *
- * An interval in-process rather than a platform cron: Render's free tier has
- * no scheduler, and this is a handful of indexed deletes - not work that
- * deserves its own dyno. If several instances ever run it at once the deletes
- * are idempotent, so the duplicate work is wasted rather than wrong.
- *
- * The first pass is delayed rather than immediate so it never competes with
- * the traffic of a cold start.
- */
-export function startDemoCleanup(): void {
-  // Tests call `cleanupDemoData` directly; a background timer would mutate the
-  // database under unrelated suites and leak a handle that keeps vitest alive.
-  if (isTest || timer) return;
-
-  const intervalMs = env.DEMO_CLEANUP_INTERVAL_MIN * 60 * 1000;
-
-  const run = (): void => {
-    void cleanupDemoData().catch((error: unknown) => {
-      // Housekeeping must never take the process down.
-      logger.error({ err: error }, '[demo] cleanup failed');
-    });
-  };
-
-  setTimeout(run, 60_000).unref();
-
-  timer = setInterval(run, intervalMs);
-  // Do not hold the event loop open during shutdown.
-  timer.unref();
-
-  logger.info(
-    { everyMinutes: env.DEMO_CLEANUP_INTERVAL_MIN, ttlHours: env.DEMO_DATA_TTL_HOURS },
-    '[demo] cleanup scheduled',
-  );
-}
-
-export function stopDemoCleanup(): void {
-  if (!timer) return;
-  clearInterval(timer);
-  timer = undefined;
 }

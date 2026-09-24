@@ -54,10 +54,18 @@ export function UserMenu() {
         <DropdownMenuContent align="end" className="w-60">
           <DropdownMenuLabel className="flex flex-col gap-0.5">
             <span className="truncate">{user.name}</span>
-            <span className="truncate text-xs font-normal text-muted-foreground">
-              {/* A guest's address is synthetic and meaningless to them. */}
-              {isGuest ? 'Demo guest - rename yourself in Settings' : user.email}
-            </span>
+            {/* A guest's address is synthetic and meaningless to them, so they
+                get a hint instead. It wraps: truncated, it lost exactly the
+                part that says what to do. An address stays on one line. */}
+            {isGuest ? (
+              <span className="text-xs font-normal text-muted-foreground">
+                Demo guest - rename yourself in Settings
+              </span>
+            ) : (
+              <span className="truncate text-xs font-normal text-muted-foreground">
+                {user.email}
+              </span>
+            )}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => logout.mutate()} disabled={logout.isPending}>

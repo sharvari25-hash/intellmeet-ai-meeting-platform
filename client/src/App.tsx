@@ -49,6 +49,10 @@ const MeetingDetailPage = lazy(() =>
     default: module.MeetingDetailPage,
   })),
 );
+// The board carries dnd-kit with it, so it is its own chunk too.
+const TasksPage = lazy(() =>
+  import('@/features/tasks/TasksPage').then((module) => ({ default: module.TasksPage })),
+);
 // The room carries the WebRTC stack with it, so it is its own chunk: nobody
 // downloads a mesh transport to read the dashboard.
 const RoomPage = lazy(() =>
@@ -103,14 +107,7 @@ export default function App() {
           <Route path="meetings" element={<MeetingsPage />} />
           <Route path="meetings/:meetingId" element={<MeetingDetailPage />} />
           <Route path="room/:roomCode" element={<RoomPage />} />
-          <Route
-            path="tasks"
-            element={
-              <ComingSoon title="Task board" phase="Phase 8">
-                Action items from your meetings, on a Kanban board that syncs in real time.
-              </ComingSoon>
-            }
-          />
+          <Route path="tasks" element={<TasksPage />} />
           <Route
             path="analytics"
             element={

@@ -2,12 +2,13 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 7 (meeting history) complete. Real WebRTC
-meetings work end to end; a recorded meeting turns itself into a transcript, a
-summary, key decisions and owned action items; and every past meeting is
-searchable by what was said, correctable by its host, and exportable as
-Markdown or PDF. Everything runs with no third-party accounts
-(`AI_PROVIDER=mock`, local recording storage).
+**Status:** 🚧 In development — Phase 8 (team boards and tasks) complete. Real
+WebRTC meetings work end to end; a recorded meeting turns itself into a
+transcript, a summary, key decisions and owned action items; every past
+meeting is searchable, correctable by its host and exportable; and action
+items become tasks on a Kanban board that two browsers edit together live.
+Everything runs with no third-party accounts (`AI_PROVIDER=mock`, local
+recording storage).
 
 ---
 
@@ -27,6 +28,7 @@ Markdown or PDF. Everything runs with no third-party accounts
 | Frontend | React 19, TypeScript, Vite 7, React Router 7, Tailwind CSS v4, shadcn/ui, lucide-react |
 | Client state | TanStack Query (server state), Zustand (session, theme, socket) |
 | Forms | react-hook-form + the shared zod schemas; sonner for toasts |
+| Drag and drop | dnd-kit (mouse, touch and keyboard) |
 | Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
 | Database | MongoDB Atlas + Mongoose |
 | Cache / jobs | Redis (ioredis) + BullMQ (post-meeting AI job, worker in-process) |
@@ -67,9 +69,10 @@ npm run dev
 
 Then open <http://localhost:5173> and press **Try Live Demo** — no sign-up
 needed. You get a guest identity of your own (a generated name like "Amber
-Otter") in a seeded team with three colleagues and three past meetings that
-already have transcripts, summaries, chat and action items. Press it again in a
-private window and you are a second, different person in the same team.
+Otter") in a seeded team with three colleagues, three past meetings that
+already have transcripts, summaries, chat and action items, and a task board
+with work in every column. Press it again in a private window and you are a
+second, different person in the same team, on the same board.
 
 | URL | What |
 | --- | --- |
@@ -91,7 +94,7 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm run lint:fix` | ESLint with autofix |
 | `npm run typecheck` | `tsc --noEmit` in every workspace |
 | `npm test` | Vitest suites in every workspace |
-| `npm run test:e2e` | Playwright: demo identity, history search + export, two browsers in one meeting, record → AI → edit → export (needs Docker + seed; cleans up after itself). `E2E_BASE_URL` / `E2E_API_URL` point it at other ports |
+| `npm run test:e2e` | Playwright: two guests on one board (create, drag, live move, comment + mention), action item → task, demo identity, history search + export, two browsers in one meeting, record → AI → edit → export (needs Docker + seed; cleans up after itself). `E2E_BASE_URL` / `E2E_API_URL` point it at other ports |
 | `npm run dev:https` | Dev over HTTPS on the LAN, for testing from a phone |
 | `npm run eval:ai -w @intellmeet/server` | Scores the AI provider on the sample transcripts in `server/fixtures/` |
 | `npm run worker -w @intellmeet/server` | Standalone AI worker (only with `RUN_WORKER_IN_PROCESS=false`) |
@@ -108,9 +111,9 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | GET | `/api/health` | – | Liveness + per-dependency status |
 | GET | `/api/health/ready` | – | Readiness (503 when a dependency is down) |
 | POST | `/api/auth/register` | – | Create an account |
-| POST | `/api/auth/login` | – | Sign in (5 attempts / 15 min per IP+email) |
+| POST | `/api/auth/login` | – | Sign in (5 failed attempts / 15 min per IP+email) |
 | POST | `/api/auth/demo` | – | "Try Live Demo": create a guest in the demo team and sign in as it |
-| DELETE | `/api/auth/demo` | Bearer | End a guest's demo session: delete the guest and what it hosted (guests only) |
+| DELETE | `/api/auth/demo` | Bearer | End a guest's demo session: delete the guest and what it made (guests only) |
 | POST | `/api/auth/refresh` | cookie | Rotate the refresh token |
 | POST | `/api/auth/logout` | cookie | End the session (idempotent) |
 | GET | `/api/auth/me` | Bearer | Current user |
@@ -140,6 +143,19 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | GET | `/api/meetings/:id/intelligence` | Bearer | AI status, transcript and insight in one response |
 | PATCH | `/api/meetings/:id/insight` | Bearer | Correct the summary, decisions or action items (host) |
 | POST | `/api/meetings/:id/ai/retry` | Bearer | Re-queue a failed AI run (host) |
+| POST | `/api/meetings/:id/tasks` | Bearer | Turn one or many action items into tasks on the team board |
+| GET | `/api/boards?teamId=` | Bearer | A team's boards (creates the default one on first use) |
+| POST | `/api/boards` | Bearer | Create a board (team admin) |
+| GET | `/api/boards/:id` | Bearer | A board with its columns and tasks |
+| PATCH / DELETE | `/api/boards/:id` | Bearer | Rename / delete a board (team admin; not the default one) |
+| POST | `/api/boards/:id/columns` | Bearer | Add a column (team admin) |
+| PUT | `/api/boards/:id/columns` | Bearer | Reorder columns: the full list of ids (team admin) |
+| PATCH / DELETE | `/api/boards/:id/columns/:columnId` | Bearer | Rename or mark done / remove an empty column (team admin) |
+| POST | `/api/boards/:id/tasks` | Bearer | Create a task (bottom of a column) |
+| GET | `/api/tasks/mine` | Bearer | Tasks assigned to me across every board |
+| GET / PATCH / DELETE | `/api/tasks/:id` | Bearer | Read / edit / delete a task (samples: admin only; delete: creator or admin) |
+| POST | `/api/tasks/:id/move` | Bearer | Move: `{ columnId, afterId, beforeId }` |
+| GET / POST | `/api/tasks/:id/comments` | Bearer | A task's comments / add one (`@mentions` notify) |
 | GET | `/api/notifications` | Bearer | List notifications + unread count |
 | PATCH | `/api/notifications/:id/read` | Bearer | Mark one read |
 | PATCH | `/api/notifications/read-all` | Bearer | Mark all read |
@@ -162,7 +178,8 @@ sides import the same constants instead of re-typing strings.
 | WebRTC | `rtc:offer` `rtc:answer` `rtc:ice-candidate` (targeted by socket id, relayed verbatim) |
 | Media | `media:toggle` |
 | Recording / AI | `recording:state` (host → room, drives the indicator), `ai:status` (server → team) |
-| Chat | `chat:send` `chat:message` `chat:typing` `chat:stop-typing` |
+| Chat | `chat:send` `chat:message` `chat:typing` `chat:stop-typing` (an `@name` in a message notifies that team-mate) |
+| Boards | `board:join` `board:leave` (client → server, membership checked); `task:created` `task:updated` `task:moved` `task:deleted` `task:commented` `board:refresh` (server → `board:<id>`) |
 | Presence | `presence:online` `presence:offline` |
 | Notifications | `notify:new` |
 | Errors | `socket:error` (same `{ code, message }` vocabulary as REST) |
@@ -183,7 +200,8 @@ Signalling is relayed without being parsed — media never touches the server.
 | `/app/room/:code` | protected | **Meeting room** — lobby, mesh video, screen share, chat, recording |
 | `/app/meetings` | protected | **Meeting history** — upcoming/live/past, search across titles, summaries and transcripts, pagination (all in the URL) |
 | `/app/meetings/:id` | protected | **Meeting page** — tabs for summary, action items, transcript (search, click-to-seek), chat and recording; host editing; export |
-| `/app/tasks`, `/app/analytics` | protected | Wired and guarded; their features land in Phases 8–9 |
+| `/app/tasks` | protected | **Team board** (drag and drop, live) and **My tasks**; `?board=`, `?task=`, `?view=mine` in the URL |
+| `/app/analytics` | protected | Wired and guarded; arrives in Phase 9 |
 
 **Client auth.** The access token lives in a plain JavaScript variable — never
 in `localStorage`, which any script on the origin can read. A hard reload
@@ -207,6 +225,13 @@ bandwidth growing with the participant count — the room warns above six, and
 
 Everything above the transport talks through a `MediaTransport` interface, so
 swapping the mesh for an SFU replaces one class and leaves the UI untouched.
+
+**Meetings nobody ended end themselves.** A closed tab or a server restart
+never presses **End for all**. A live meeting nobody has been connected to for
+`LIVE_MEETING_IDLE_MIN` (10) minutes is ended by the housekeeping sweep (30 s
+after startup, then every 5 minutes), dated to when its room emptied. After a
+restart the room page rejoins by itself, so a call that is still going is
+never mistaken for an abandoned one.
 
 **Testing it from a phone.** Browsers only allow camera and microphone access
 in a secure context — HTTPS, or localhost. A phone opening
@@ -303,6 +328,31 @@ transcript) and **PDF** (`@react-pdf/renderer`, loaded only when first used).
 The PDF uses the built-in Helvetica, so it covers Western European text; the
 Markdown export keeps every character.
 
+## Team boards and tasks
+
+`/app/tasks` shows the team's board: **To Do / In Progress / Review / Done** to
+start with. Cards drag within and between columns (mouse, touch, or the
+keyboard from each card's grip), and everyone looking at the board sees it
+happen: a drop is shown at once, saved as "between these two cards", and
+broadcast to the board's room. Every task carries a version, so late or
+duplicated events never undo a newer change.
+
+- **Tasks** have an assignee, due date, priority, description, comments and,
+  when made from a meeting, a link back to it. Overdue tasks are marked on
+  the board and in **My tasks**, which lists everything assigned to you across
+  every board.
+- **From a meeting:** each action item has **Create task**, and **Create
+  tasks for all** files the rest at once, with owners and due dates pre-filled
+  from the AI. The item then shows where its task is ("In Progress").
+- **@mentions** in meeting chat and task comments notify the person, live and
+  in the bell.
+- **Who may do what:** any member creates, moves and comments on any task and
+  edits any but the sample ones; tasks are deleted by their creator or a team
+  admin; boards and columns are the team admin's.
+
+`docs/architecture.md` explains the fractional ordering, the versioning and
+the permission rule.
+
 ## Demo mode: a guest per sign-in
 
 **Try Live Demo** (`POST /api/auth/demo`) creates a **new guest account** each
@@ -317,19 +367,35 @@ Guests clean up after themselves:
 
 - **Automatically.** Every `DEMO_CLEANUP_INTERVAL_MIN` (30) minutes the server
   removes guests idle for more than `DEMO_DATA_TTL_HOURS` (6) — no sign-in or
-  token refresh in that time — together with the meetings they hosted and the
-  teams they created, and sweeps other demo content older than the TTL. The
-  **seeded team and its sample meetings are never removed**, and neither is
-  anything recent, which is what makes the sweep safe while people are using
-  the product.
+  token refresh in that time — together with the meetings they hosted, the
+  teams they created and the tasks and comments they wrote, and sweeps other
+  demo content older than the TTL. The **seeded team, its sample meetings and
+  its sample tasks are never removed**, and neither is anything recent, which
+  is what makes the sweep safe while people are using the product.
 - **On request.** The account menu's **End demo session** (`DELETE
-  /api/auth/demo`) deletes the guest and what it hosted immediately.
+  /api/auth/demo`) deletes the guest and what it made immediately.
 - **At a ceiling.** At most `DEMO_MAX_GUESTS` (200) guests exist at once; the
   endpoint is public and creates accounts, so beyond that it answers 503 until
   the sweep has made room.
 
+**The shared demo board.** All guests share the seeded team's board: six
+sample tasks (one deliberately overdue, three made from the sample meetings'
+action items). A guest can move anything, add tasks and delete its own, but
+cannot edit or delete the samples, remove anyone else's tasks, or change the
+columns. Moves are undone later instead: once nobody has touched the board for
+`DEMO_BOARD_RESET_IDLE_MIN` (60) minutes, the samples go back where the seed
+put them, without comments. A guest's own tasks and comments leave with the
+guest; the samples are never deleted.
+
+**Rate limits sized for a room.** Judges on one college or office network
+share an IP. Refreshing a session (every page load) and "Try Live Demo" have
+their own per-IP budgets (`RATE_LIMIT_REFRESH_PER_15_MIN`, 600;
+`RATE_LIMIT_DEMO_PER_15_MIN`, 60), register and sign-in keep 30, and only
+*failed* sign-ins count against an account. `docs/architecture.md` has the
+per-session request count behind these numbers.
+
 To clear everything but the seed immediately before a demo (this also removes
-any guest still signed in):
+any guest still signed in, and puts the sample tasks back):
 
 ```bash
 npm run demo:cleanup -w @intellmeet/server -- 0
@@ -420,7 +486,7 @@ npm run prepare   # points git at .husky/
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
 Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
-Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban · Phase 9 analytics ·
+Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban ✅ · Phase 9 analytics ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.
 

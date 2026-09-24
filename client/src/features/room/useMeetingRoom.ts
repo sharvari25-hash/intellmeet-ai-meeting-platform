@@ -106,14 +106,21 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
     if (!socket || !ice.data) return;
 
     let active = true;
+    // Whether a roster has arrived, i.e. the server has us in the room.
+    let joined = false;
 
     const onParticipants = (raw: unknown) => {
       const data = raw as RoomParticipants;
       if (!active || data.meetingId !== meetingId) return;
 
-      // The roster arrives once, in response to our join, and carries our own
+      // The roster arrives in response to our join, and carries our own
       // socket id - which the mesh needs both to exclude itself and to decide
-      // politeness for every peer.
+      // politeness for every peer. After a reconnect it arrives again, for a
+      // new socket id: every existing connection was keyed to the old one,
+      // so the mesh is rebuilt rather than patched.
+      transportRef.current?.close();
+      joined = true;
+
       const transport = new MeshTransport(
         socket,
         meetingId,
@@ -220,6 +227,18 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
       toast.error(data.message);
     };
 
+    // Socket.io reconnects by itself after a dropped connection or a server
+    // restart, but as a new socket that is in no rooms. Without joining again
+    // the server would think we had left - no chat, no signalling, and the
+    // idle sweep would eventually end the meeting under a call still running
+    // peer to peer. Before the first roster there is nothing to redo: the
+    // original join is still queued and goes out on connect.
+    const onReconnect = () => {
+      if (!active || !joined) return;
+      socket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    };
+
+    socket.on('connect', onReconnect);
     socket.on(SOCKET_EVENTS.ROOM_PARTICIPANTS, onParticipants);
     socket.on(SOCKET_EVENTS.ROOM_USER_JOINED, onUserJoined);
     socket.on(SOCKET_EVENTS.ROOM_USER_LEFT, onUserLeft);
@@ -236,6 +255,7 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
     return () => {
       active = false;
 
+      socket.off('connect', onReconnect);
       socket.off(SOCKET_EVENTS.ROOM_PARTICIPANTS, onParticipants);
       socket.off(SOCKET_EVENTS.ROOM_USER_JOINED, onUserJoined);
       socket.off(SOCKET_EVENTS.ROOM_USER_LEFT, onUserLeft);

@@ -2,7 +2,7 @@ import type { Request, RequestHandler } from 'express';
 import rateLimit, { MemoryStore, type Store } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { getRedis } from '../config/redis.js';
-import { isTest } from '../config/env.js';
+import { env, isTest } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
 
 /**
@@ -75,9 +75,12 @@ function createStore(prefix: string): Store | undefined {
 interface LimiterOptions {
   prefix: string;
   windowMs: number;
-  limit: number;
+  /** A function when the ceiling comes from configuration, read per request. */
+  limit: number | (() => number);
   message: string;
   keyGenerator?: (req: Request) => string;
+  /** Count only requests that fail (status >= 400). */
+  skipSuccessfulRequests?: boolean;
 }
 
 function buildLimiter({
@@ -86,10 +89,12 @@ function buildLimiter({
   limit,
   message,
   keyGenerator,
+  skipSuccessfulRequests = false,
 }: LimiterOptions): RequestHandler {
   return rateLimit({
     windowMs,
-    limit,
+    limit: typeof limit === 'number' ? limit : () => limit(),
+    skipSuccessfulRequests,
     // Draft-7 `RateLimit` headers; the legacy `X-RateLimit-*` set is off.
     standardHeaders: 'draft-7',
     legacyHeaders: false,
@@ -128,13 +133,17 @@ function createLimiter(options: LimiterOptions): RequestHandler {
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
 /**
- * Login limiter: 5 attempts per 15 minutes per IP **and** email.
+ * Login limiter: 5 *failed* attempts per 15 minutes per IP **and** email.
  *
  * Keying on both is what makes this useful. IP alone punishes everyone behind
  * a corporate NAT when one colleague fat-fingers a password; email alone lets
  * an attacker lock a known victim out of their own account by deliberately
  * failing. The pair throttles credential stuffing against one account while
  * leaving other users on the same IP unaffected.
+ *
+ * Only failures count. A correct password is not a guess, and counting it
+ * meant five people in one room signing in as the same seeded team-mate
+ * locked the sixth out for a quarter of an hour.
  *
  * Mounted after `express.json()`, so `req.body` is already parsed - but it is
  * read defensively, because the limiter runs *before* validation and the body
@@ -144,6 +153,7 @@ export const loginLimiter = createLimiter({
   prefix: 'login',
   windowMs: FIFTEEN_MINUTES,
   limit: 5,
+  skipSuccessfulRequests: true,
   message: 'Too many sign-in attempts. Please try again in 15 minutes.',
   keyGenerator: (req) => {
     const body = req.body as { email?: unknown } | undefined;
@@ -153,14 +163,54 @@ export const loginLimiter = createLimiter({
 });
 
 /**
- * Broader limiter for the remaining auth routes (register, refresh, demo,
- * logout), keyed on IP only. Generous enough not to interrupt real use, tight
- * enough to stop scripted account creation and refresh-token probing.
+ * Register and sign-in, per IP: 30 per 15 minutes.
+ *
+ * Both hash a password (bcrypt, ~350ms of CPU each at cost 12), and register
+ * creates an account, so this is the tight one. Every request counts,
+ * successful or not: the cost being bounded is the hashing itself.
  */
 export const authLimiter = createLimiter({
   prefix: 'auth',
   windowMs: FIFTEEN_MINUTES,
   limit: 30,
+  message: 'Too many requests. Please try again shortly.',
+});
+
+/**
+ * "Try Live Demo", per IP (`RATE_LIMIT_DEMO_PER_15_MIN`, default 60).
+ *
+ * Its own budget, because several reviewers behind one college or office NAT
+ * share an address, and each makes one or two demo sign-ins (a second window
+ * to meet themselves in a call). No password is hashed, so it is cheap; it
+ * creates an account, so it is bounded twice: per address here, and for
+ * everyone at once by `DEMO_MAX_GUESTS`.
+ */
+export const demoLimiter = createLimiter({
+  prefix: 'demo',
+  windowMs: FIFTEEN_MINUTES,
+  limit: () => env.RATE_LIMIT_DEMO_PER_15_MIN,
+  message: 'Too many demo sign-ins from this network. Please try again in a few minutes.',
+});
+
+/**
+ * Session refresh, per IP (`RATE_LIMIT_REFRESH_PER_15_MIN`, default 600).
+ *
+ * Every page load makes one (the access token lives in memory, so a reload
+ * swaps the cookie for a new one), and every open tab one more each quarter
+ * of an hour. Behind a shared address that adds up quickly, and a rejected
+ * refresh looks to the person like being signed out.
+ *
+ * There is nothing to guess: a refresh token is 256 random bits, so the limit
+ * only bounds a runaway client or a flood, and can be generous. It stays
+ * per IP rather than per session because the token rotates on every call -
+ * the only stable session key, the family id, is known only after the
+ * database lookup this is meant to protect, and keying on the raw cookie
+ * would give every forged value a fresh bucket.
+ */
+export const refreshLimiter = createLimiter({
+  prefix: 'refresh',
+  windowMs: FIFTEEN_MINUTES,
+  limit: () => env.RATE_LIMIT_REFRESH_PER_15_MIN,
   message: 'Too many requests. Please try again shortly.',
 });
 
@@ -170,4 +220,21 @@ export const writeLimiter = createLimiter({
   windowMs: 60 * 1000,
   limit: 30,
   message: 'Too many requests. Please slow down.',
+});
+
+/**
+ * Board edits - creating, editing, moving and commenting on tasks - per
+ * signed-in account: 120 a minute.
+ *
+ * Keyed on the account, not the address. Dragging cards around is fast and
+ * bursty, and a room of reviewers on one network would share a per-IP budget
+ * the way they used to share the auth one. Every route behind it requires a
+ * token, so the account is known; the address is only a fallback.
+ */
+export const boardWriteLimiter = createLimiter({
+  prefix: 'board',
+  windowMs: 60 * 1000,
+  limit: 120,
+  message: 'You are changing the board very quickly. Please slow down.',
+  keyGenerator: (req) => (req.user ? `user:${req.user.id}` : ipBucket(req)),
 });

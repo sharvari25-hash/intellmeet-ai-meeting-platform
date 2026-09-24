@@ -33,8 +33,10 @@ describe('<UserMenu />', () => {
     await user.click(screen.getByRole('button', { name: 'Account menu for Amber Otter' }));
 
     // The synthetic address means nothing to a guest, so it is not shown.
-    expect(screen.getByText(/demo guest/i)).toBeInTheDocument();
+    const hint = screen.getByText('Demo guest - rename yourself in Settings');
     expect(screen.queryByText('x@guest.intellmeet.invalid')).not.toBeInTheDocument();
+    // It wraps inside the 15rem menu rather than being cut off mid-sentence.
+    expect(hint).not.toHaveClass('truncate');
 
     await user.click(screen.getByRole('menuitem', { name: 'End demo session' }));
 
