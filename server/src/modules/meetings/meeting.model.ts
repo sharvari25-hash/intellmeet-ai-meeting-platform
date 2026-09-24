@@ -49,6 +49,13 @@ const meetingSchema = new Schema(
     startedAt: { type: Date, default: null },
     endedAt: { type: Date, default: null },
 
+    // The last moment somebody was known to be in the room: stamped on every
+    // join and leave, and by the housekeeping sweep while the room is
+    // occupied. A live meeting nobody has been in since LIVE_MEETING_IDLE_MIN
+    // ago is ended automatically (meeting.sweep.ts), because a closed tab, a
+    // crash or a server restart never presses "End".
+    lastActiveAt: { type: Date, default: null },
+
     participants: { type: [participantSchema], default: [] },
     recording: { type: recordingSchema, default: () => ({ status: 'none' }) },
     aiStatus: { type: String, enum: AI_STATUSES, default: 'none' },
@@ -80,6 +87,10 @@ meetingSchema.index({ teamId: 1, status: 1, endedAt: -1 });
 meetingSchema.index({ title: 'text', description: 'text' });
 
 meetingSchema.index({ seedKey: 1 }, { unique: true, sparse: true });
+
+// The abandoned-meeting sweep reads every live meeting every few minutes; the
+// indexes above all lead with teamId, so they cannot serve it.
+meetingSchema.index({ status: 1, lastActiveAt: 1 });
 
 export type MeetingDocument = HydratedDocument<InferSchemaType<typeof meetingSchema>>;
 

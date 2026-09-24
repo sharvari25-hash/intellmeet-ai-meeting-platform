@@ -3,9 +3,9 @@ import { createApp } from './app.js';
 import { connectMongo, disconnectMongo } from './config/db.js';
 import { env } from './config/env.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
+import { startHousekeeping, stopHousekeeping } from './jobs/housekeeping.js';
 import { startMeetingQueue, type MeetingQueue } from './jobs/meetingQueue.js';
 import { logger } from './lib/logger.js';
-import { startDemoCleanup, stopDemoCleanup } from './modules/demo/demo.cleanup.js';
 import { attachRedisAdapter, closeSocketServer, createSocketServer } from './sockets/index.js';
 
 /**
@@ -33,10 +33,10 @@ async function bootstrap(): Promise<void> {
   const io = createSocketServer(server);
   attachRedisAdapter(io);
 
-  // Housekeeping for the demo workspace: idle guest accounts and stale
-  // content. Age-based and in-process: see modules/demo/demo.cleanup.ts for
-  // why it is not a reset endpoint.
-  startDemoCleanup();
+  // The periodic sweep: live meetings everybody has left (first checked 30s
+  // after startup, then every 5 minutes), and the demo workspace's idle
+  // guests and stale content. See jobs/housekeeping.ts.
+  startHousekeeping();
 
   // The post-meeting AI queue. The worker runs in this process when
   // RUN_WORKER_IN_PROCESS=true, because Render's free tier has no workers.
@@ -64,7 +64,7 @@ function registerShutdownHandlers(server: Server, meetingQueue: MeetingQueue): v
 
     logger.info({ signal }, '[server] shutting down');
 
-    stopDemoCleanup();
+    stopHousekeeping();
 
     // Close Socket.io first so connected clients get a clean disconnect and
     // reconnect to another instance, rather than having their sockets cut
