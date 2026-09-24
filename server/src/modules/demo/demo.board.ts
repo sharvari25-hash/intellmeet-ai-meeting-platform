@@ -4,19 +4,30 @@ import { env } from '../../config/env.js';
 import { stableObjectId } from '../../lib/ids.js';
 import { logger } from '../../lib/logger.js';
 import { MeetingInsight } from '../ai/insight.model.js';
+import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { Meeting } from '../meetings/meeting.model.js';
 import { Board } from '../tasks/board.model.js';
 import { TaskComment } from '../tasks/comment.model.js';
+import { deleteTasksWhere } from '../tasks/task.cleanup.js';
 import { announceBoardRefresh } from '../tasks/task.events.js';
 import { Task } from '../tasks/task.model.js';
 import { User } from '../users/user.model.js';
 import { DEMO_TEAMMATES } from './demo.constants.js';
-import { sampleActionItemId, type SeedPerson } from './demo.meetings.js';
+import {
+  historyActionItemId,
+  historyDueDate,
+  historySeedKey,
+  historyTasks,
+} from './demo.history.data.js';
+import { sampleActionItemId, setCreatedAt, type SeedPerson } from './demo.meetings.js';
 
 /**
  * The demo team's board: four columns and a handful of sample tasks, three of
  * them made from the sample meetings' action items, so a reviewer's first
- * look at the task page is a team at work rather than an empty board.
+ * look at the task page is a team at work rather than an empty board. Below
+ * the sample in "Done" sit the tasks finished from the seeded history's
+ * action items (`demo.history.data.ts`), which give the analytics' task
+ * completion something to measure.
  *
  * Every reviewer shares it. What they may do there is the general rule
  * (`taskPermissions`): move anything, add and edit their own tasks, delete
@@ -50,6 +61,12 @@ interface SampleTask {
    * and a board where everything is late would not look like a team at work.
    */
   dueInDays: number | null;
+  /**
+   * How long ago it was created, in days. Relative like the due dates, so the
+   * samples count as recent work in the analytics. A sample made from an
+   * action item is dated just after its meeting instead.
+   */
+  createdDaysAgo: number;
   /** The sample meeting (fixture key) and action item (index) it was made from. */
   from?: { meeting: string; item: number };
 }
@@ -64,6 +81,7 @@ export const SAMPLE_TASKS: readonly SampleTask[] = [
     assignee: 'Ada Lovelace',
     priority: 'high',
     dueInDays: 5,
+    createdDaysAgo: 6,
   },
   {
     key: 'release-notes',
@@ -73,6 +91,7 @@ export const SAMPLE_TASKS: readonly SampleTask[] = [
     assignee: 'Demo User',
     priority: 'low',
     dueInDays: null,
+    createdDaysAgo: 9,
   },
   {
     key: 'upload-retry',
@@ -83,6 +102,7 @@ export const SAMPLE_TASKS: readonly SampleTask[] = [
     assignee: 'Grace Hopper',
     priority: 'high',
     dueInDays: 2,
+    createdDaysAgo: 3,
     from: { meeting: 'sprint-14-planning', item: 0 },
   },
   {
@@ -94,6 +114,7 @@ export const SAMPLE_TASKS: readonly SampleTask[] = [
     priority: 'medium',
     // Overdue on purpose: the board highlights it.
     dueInDays: -2,
+    createdDaysAgo: 12,
   },
   {
     key: 'tabbed-prototype',
@@ -103,6 +124,7 @@ export const SAMPLE_TASKS: readonly SampleTask[] = [
     assignee: 'Alan Turing',
     priority: 'medium',
     dueInDays: 1,
+    createdDaysAgo: 1,
     from: { meeting: 'summary-page-design-review', item: 0 },
   },
   {
@@ -113,6 +135,7 @@ export const SAMPLE_TASKS: readonly SampleTask[] = [
     assignee: 'Grace Hopper',
     priority: 'medium',
     dueInDays: -3,
+    createdDaysAgo: 5,
     from: { meeting: 'q3-launch-retro', item: 2 },
   },
 ];
@@ -123,9 +146,21 @@ function daysFrom(now: Date, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** A task made from an action item is dated just after the meeting it came from. */
+const AFTER_MEETING_MS = 30 * 60 * 1000;
+
+/** Index of the column whose tasks count as finished. */
+const DONE_COLUMN = DEFAULT_COLUMNS.findIndex((column) => column.isDone);
+
+/** What every history task's `seedKey` starts with. */
+const HISTORY_TASK_PREFIX = `${DEMO_BOARD_KEY}:history:`;
+
 export interface SeedBoardResult {
   boardId: string;
+  /** Sample tasks, in every column. */
   tasks: number;
+  /** Finished tasks from the history meetings, in "Done" (none until the history is seeded). */
+  historyTasks: number;
 }
 
 /**
@@ -140,10 +175,13 @@ export interface SeedBoardResult {
  * - every sample task goes back to its column, position, text, owner and a
  *   due date relative to today (so the overdue one is still overdue), with
  *   no comments;
+ * - the history meetings' finished tasks (`demo.history.data.ts`) go back
+ *   to "Done", below the sample there, dated just after their meetings;
  * - tasks reviewers created are left alone.
  *
- * Must run after `seedDemoMeetings`: three samples link to its action items.
- * `people` is the seed's list, the Demo User persona first.
+ * Must run after `seedDemoMeetings` and `seedDemoHistory`: tasks link to
+ * their action items. A history task whose meeting has not been seeded is
+ * skipped. `people` is the seed's list, the Demo User persona first.
  */
 export async function seedDemoBoard(options: {
   teamId: string | Types.ObjectId;
@@ -207,9 +245,10 @@ export async function seedDemoBoard(options: {
 
     let source: { meetingId: Types.ObjectId; itemId: Types.ObjectId } | null = null;
     const dueDate = sample.dueInDays === null ? null : daysFrom(now, sample.dueInDays);
+    let createdAt = new Date(now.getTime() - sample.createdDaysAgo * 24 * 60 * 60 * 1000);
 
     if (sample.from) {
-      const meeting = await Meeting.findOne({ seedKey: sample.from.meeting }).select('_id');
+      const meeting = await Meeting.findOne({ seedKey: sample.from.meeting }).select('_id endedAt');
       const itemId = sampleActionItemId(sample.from.meeting, sample.from.item);
       const insight = meeting
         ? await MeetingInsight.findOne({ meetingId: meeting._id }).select('actionItems').lean()
@@ -218,6 +257,7 @@ export async function seedDemoBoard(options: {
 
       if (meeting && item) {
         source = { meetingId: meeting._id, itemId };
+        if (meeting.endedAt) createdAt = new Date(meeting.endedAt.getTime() + AFTER_MEETING_MS);
         // A reviewer may have made a task from this item before the sample
         // existed. The sample takes the link; theirs keeps its meeting.
         await Task.updateMany(
@@ -250,6 +290,8 @@ export async function seedDemoBoard(options: {
       },
       { upsert: true, new: true },
     );
+    // Relative like the due date, on every seed and reset.
+    await setCreatedAt(Task.collection, task._id, createdAt);
 
     if (source) {
       const done = DEFAULT_COLUMNS[sample.column]?.isDone ?? false;
@@ -267,6 +309,14 @@ export async function seedDemoBoard(options: {
     }
   }
 
+  const historyCount = await seedHistoryTasks({
+    boardId: board._id,
+    teamId,
+    below: SAMPLE_TASKS.filter((sample) => sample.column === DONE_COLUMN).length,
+    byName,
+    now,
+  });
+
   // The samples come back without the discussion reviewers left on them:
   // the next reviewer's first look is the board as seeded, not somebody's
   // test comments. (A reset only happens once nobody has touched the board,
@@ -274,11 +324,97 @@ export async function seedDemoBoard(options: {
   const samples = await Task.find({ boardId: board._id, seeded: true }).select('_id');
   await TaskComment.deleteMany({ taskId: { $in: samples.map((sample) => sample._id) } });
 
-  return { boardId: board._id.toString(), tasks: SAMPLE_TASKS.length };
+  return { boardId: board._id.toString(), tasks: SAMPLE_TASKS.length, historyTasks: historyCount };
+}
+
+/**
+ * The history meetings' action items that were finished as tasks: in "Done",
+ * newest first below the samples, each linked both ways to its item. They are
+ * what gives the members' completion rates something to measure.
+ */
+async function seedHistoryTasks(options: {
+  boardId: Types.ObjectId;
+  teamId: Types.ObjectId;
+  /** How many samples sit above them in "Done". */
+  below: number;
+  byName: (name: string | null) => SeedPerson | undefined;
+  now: Date;
+}): Promise<number> {
+  let seeded = 0;
+  const taskKey = (meetingKey: string, index: number) =>
+    `${HISTORY_TASK_PREFIX}${meetingKey}:${index}`;
+
+  // One taken out of the history data (or renamed) goes, unlinked from its
+  // item: seeded tasks are otherwise never deleted.
+  await deleteTasksWhere(
+    {
+      boardId: options.boardId,
+      seedKey: {
+        $regex: `^${HISTORY_TASK_PREFIX}`,
+        $nin: historyTasks().map(({ meeting, index }) => taskKey(meeting.key, index)),
+      },
+    },
+    { includeSeeded: true },
+  );
+
+  for (const { meeting: template, item, index } of historyTasks()) {
+    const meeting = await Meeting.findOne({ seedKey: historySeedKey(template) }).select(
+      '_id hostId endedAt',
+    );
+    if (!meeting?.endedAt) continue;
+
+    const seedKey = taskKey(template.key, index);
+    const itemId = historyActionItemId(template.key, index);
+    const owner = options.byName(item.owner);
+
+    // As with the samples: a reviewer's task made from this item before this
+    // one existed keeps its meeting but hands over the link.
+    await Task.updateMany(
+      { sourceMeetingId: meeting._id, sourceActionItemId: itemId, seedKey: { $ne: seedKey } },
+      { $set: { sourceActionItemId: null }, $inc: { version: 1 } },
+    );
+
+    const task = await Task.findOneAndUpdate(
+      { seedKey },
+      {
+        $set: {
+          boardId: options.boardId,
+          teamId: options.teamId,
+          columnId: columnId(DONE_COLUMN),
+          title: item.text,
+          description: `Raised in ${template.title}.`,
+          assigneeId: owner ? new Types.ObjectId(owner.id) : null,
+          dueDate: historyDueDate(template, item, options.now),
+          priority: 'medium',
+          order: (options.below + seeded + 1) * ORDER_STEP,
+          sourceMeetingId: meeting._id,
+          sourceActionItemId: itemId,
+          createdBy: meeting.hostId,
+          seeded: true,
+        },
+        $inc: { version: 1 },
+      },
+      { upsert: true, new: true },
+    );
+    await setCreatedAt(
+      Task.collection,
+      task._id,
+      new Date(meeting.endedAt.getTime() + AFTER_MEETING_MS),
+    );
+
+    await MeetingInsight.updateOne(
+      { meetingId: meeting._id },
+      { $set: { 'actionItems.$[item].taskId': task._id, 'actionItems.$[item].status': 'done' } },
+      { arrayFilters: [{ 'item._id': itemId }] },
+    );
+    seeded += 1;
+  }
+
+  return seeded;
 }
 
 /** The seeded people, looked up again: the persona first, as the seed passes them. */
-async function seededPeople(): Promise<SeedPerson[]> {
+export async function seededPeople(): Promise<SeedPerson[]> {
   const emails = [env.DEMO_EMAIL.toLowerCase(), ...DEMO_TEAMMATES.map((mate) => mate.email)];
   const users = await User.find({ email: { $in: emails } }).select('name email');
   return emails.flatMap((email) => {
@@ -318,6 +454,7 @@ export async function restoreDemoBoard(
 
   await seedDemoBoard({ teamId: board.teamId, people, now });
   announceBoardRefresh([board._id.toString()]);
+  await invalidateTeamAnalytics([board.teamId]);
   logger.info({ boardId: board._id.toString() }, '[demo] sample tasks restored on the demo board');
   return true;
 }

@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { connectMongo, disconnectMongo } from '../config/db.js';
 import { env } from '../config/env.js';
+import { connectRedis, disconnectRedis } from '../config/redis.js';
 import { generateCode } from '../lib/ids.js';
 import { logger } from '../lib/logger.js';
 import { hashPassword } from '../lib/password.js';
@@ -10,7 +11,9 @@ import {
   DEMO_TEAM_NAME,
   DEMO_TEAM_SLUG,
 } from '../modules/demo/demo.constants.js';
+import { invalidateTeamAnalytics } from '../modules/analytics/analytics.cache.js';
 import { seedDemoBoard } from '../modules/demo/demo.board.js';
+import { seedDemoHistory } from '../modules/demo/demo.history.js';
 import { seedDemoMeetings } from '../modules/demo/demo.meetings.js';
 import { Team } from '../modules/teams/team.model.js';
 import { User } from '../modules/users/user.model.js';
@@ -27,7 +30,9 @@ import { User } from '../modules/users/user.model.js';
  *
  * Phase 6 adds three past meetings with transcripts and AI insights (from
  * `server/fixtures/`); Phase 8 the team's board with sample tasks, some made
- * from those meetings' action items.
+ * from those meetings' action items; Phase 9 eight weeks of shorter meetings
+ * before those, and their finished tasks, so the analytics have a history.
+ * Everything is dated relative to the run.
  */
 
 async function upsertUser(name: string, email: string, passwordHash: string, isDemo: boolean) {
@@ -45,6 +50,11 @@ async function upsertUser(name: string, email: string, passwordHash: string, isD
 
 async function seed(): Promise<void> {
   await connectMongo({ uri: env.MONGODB_URI });
+  // Only to tell a running API its cached analytics are out of date; the
+  // cache fails open, so a seed with Redis down still completes.
+  await connectRedis(env.REDIS_URL).catch((error: unknown) => {
+    logger.warn({ err: error }, '[seed] Redis unavailable; cached analytics expire on their own');
+  });
 
   // Hash once and reuse: bcrypt at cost 12 is ~350ms, and every seeded account
   // shares the same demo password anyway.
@@ -106,7 +116,15 @@ async function seed(): Promise<void> {
 
   // The team's board with sample tasks, three of them made from those
   // meetings' action items. Re-running puts the samples back as seeded.
+  // Eight weeks of shorter meetings before those, so the analytics have a
+  // history to chart. Before the board: some of their items are finished
+  // tasks on it.
+  const history = await seedDemoHistory({ teamId: team._id, people: everyone });
+
   const board = await seedDemoBoard({ teamId: team._id.toString(), people: everyone });
+
+  // A running API may have the old numbers cached for a few minutes.
+  await invalidateTeamAnalytics([team._id]);
 
   logger.info(
     {
@@ -128,13 +146,20 @@ async function seed(): Promise<void> {
   console.log(
     `Meetings:    ${meetings.created} created, ${meetings.updated} refreshed (sample history with AI summaries)`,
   );
-  console.log(`Board:       ${board.tasks} sample tasks on the team board, as seeded\n`);
+  console.log(
+    `History:     ${history.created} created, ${history.updated} moved forward, ${history.removed} retired (eight weeks of shorter meetings, for the analytics)`,
+  );
+  console.log(
+    `Board:       ${board.tasks} sample tasks and ${board.historyTasks} finished history tasks, as seeded\n`,
+  );
 }
 
+const disconnect = () => Promise.allSettled([disconnectMongo(), disconnectRedis()]);
+
 seed()
-  .then(() => disconnectMongo())
+  .then(disconnect)
   .then(() => process.exit(0))
   .catch((error: unknown) => {
     logger.fatal({ err: error }, '[seed] failed');
-    void disconnectMongo().finally(() => process.exit(1));
+    void disconnect().finally(() => process.exit(1));
   });

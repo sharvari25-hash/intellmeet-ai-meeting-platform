@@ -12,6 +12,7 @@ import {
   type UpdateColumnInput,
 } from '@intellmeet/shared';
 import { AppError } from '../../lib/errors.js';
+import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { Team, type TeamDocument } from '../teams/team.model.js';
 import { Board, type BoardDocument } from './board.model.js';
 import { Task } from './task.model.js';
@@ -180,6 +181,7 @@ export async function deleteBoard(boardId: string, userId: string): Promise<void
 
   await deleteTasksWhere({ boardId: board._id }, { includeSeeded: true });
   await board.deleteOne();
+  await invalidateTeamAnalytics([board.teamId]);
 }
 
 // --- Columns -------------------------------------------------------------------
@@ -213,6 +215,8 @@ export async function updateColumn(
   if (input.title !== undefined) column.title = input.title;
   if (input.isDone !== undefined) column.isDone = input.isDone;
   await board.save();
+  // "Done" decides which tasks count as completed.
+  if (input.isDone !== undefined) await invalidateTeamAnalytics([board.teamId]);
 
   return toBoardDto(board, team, role);
 }
@@ -269,8 +273,13 @@ export async function reorderColumns(
   return toBoardDto(board, team, role);
 }
 
-/** Notes that a task on this board changed, for the demo board's idle reset. */
+/**
+ * Notes that a task on these boards changed: for the demo board's idle reset,
+ * and so the teams' analytics (task completion) are recomputed. Every task
+ * write - create, edit, move, delete, comment, from a meeting - comes here.
+ */
 export async function touchBoards(boardIds: (string | Types.ObjectId)[]): Promise<void> {
   if (boardIds.length === 0) return;
   await Board.updateMany({ _id: { $in: boardIds } }, { $set: { activityAt: new Date() } });
+  await invalidateTeamAnalytics(await Board.distinct('teamId', { _id: { $in: boardIds } }));
 }

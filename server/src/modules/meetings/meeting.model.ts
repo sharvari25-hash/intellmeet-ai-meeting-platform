@@ -81,6 +81,10 @@ meetingSchema.index({ teamId: 1, status: 1, createdAt: -1 });
 // sort in memory.
 meetingSchema.index({ teamId: 1, status: 1, endedAt: -1 });
 
+// Analytics: a team's ended meetings that started in a range of days. Also
+// serves the history's "Live" filter, newest first.
+meetingSchema.index({ teamId: 1, status: 1, startedAt: -1 });
+
 // Text search across titles and descriptions. Summaries and transcripts live
 // in their own collections with their own text indexes; the history search
 // (meeting.history.ts) queries all three and merges the rankings.

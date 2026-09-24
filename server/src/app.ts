@@ -7,6 +7,7 @@ import { httpLogger } from './middleware/httpLogger.js';
 import { notFound } from './middleware/notFound.js';
 import { requestId } from './middleware/requestId.js';
 import { mongoSanitize, preventParameterPollution } from './middleware/sanitize.js';
+import { analyticsRouter } from './modules/analytics/analytics.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { healthRouter } from './modules/health/health.routes.js';
 import { meetingRouter } from './modules/meetings/meeting.routes.js';
@@ -77,6 +78,7 @@ export function createApp(): Express {
   app.use('/api/boards', boardRouter);
   app.use('/api/tasks', taskRouter);
   app.use('/api/notifications', notificationRouter);
+  app.use('/api/analytics', analyticsRouter);
   app.use('/api/rtc', rtcRouter);
   app.use('/api/uploads', uploadRouter);
 

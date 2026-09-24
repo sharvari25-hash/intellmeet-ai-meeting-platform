@@ -59,6 +59,19 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.51 0.21 277);
+
+  /*
+   * Chart colours (analytics). Categorical slots in a fixed order, checked
+   * for colour-blind separation and contrast against the card surface in
+   * both themes; "rest" is the de-emphasis grey behind a highlighted series;
+   * good/critical are status colours, only ever shown with a label.
+   */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-rest: #c3c2b7;
+  --chart-good: #0ca30c;
+  --chart-critical: #d03b3b;
 }
 
 .dark {
@@ -82,6 +95,14 @@
   --border: oklch(1 0 0 / 12%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.62 0.19 277);
+
+  /* The same hues, stepped for the dark surface (not an automatic flip). */
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-rest: #56554f;
+  --chart-good: #0ca30c;
+  --chart-critical: #d03b3b;
 }
 
 @layer base {

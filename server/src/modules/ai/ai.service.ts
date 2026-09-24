@@ -9,6 +9,7 @@ import {
   type UpdateInsightInput,
 } from '@intellmeet/shared';
 import { AppError } from '../../lib/errors.js';
+import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { getMeetingForHost, getMeetingForMember } from '../meetings/meeting.service.js';
 import { Board } from '../tasks/board.model.js';
 import { Task } from '../tasks/task.model.js';
@@ -184,6 +185,8 @@ export async function updateInsight(
   }
 
   await MeetingInsight.updateOne({ _id: stored._id }, { $set: changes });
+  // Items added, removed or ticked off change what the team completed.
+  if (input.actionItems !== undefined) await invalidateTeamAnalytics([meeting.teamId]);
 
   return getMeetingIntelligence(meetingId, userId);
 }

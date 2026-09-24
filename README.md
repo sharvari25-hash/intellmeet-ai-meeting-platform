@@ -2,13 +2,14 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 8 (team boards and tasks) complete. Real
-WebRTC meetings work end to end; a recorded meeting turns itself into a
-transcript, a summary, key decisions and owned action items; every past
-meeting is searchable, correctable by its host and exportable; and action
-items become tasks on a Kanban board that two browsers edit together live.
-Everything runs with no third-party accounts (`AI_PROVIDER=mock`, local
-recording storage).
+**Status:** 🚧 In development — Phase 9 (analytics) complete. Real WebRTC
+meetings work end to end; a recorded meeting turns itself into a transcript,
+a summary, key decisions and owned action items; every past meeting is
+searchable, correctable by its host and exportable; action items become tasks
+on a Kanban board that two browsers edit together live; and an analytics
+dashboard charts the team's meetings, attendance and follow-through, with CSV
+export. Everything runs with no third-party accounts (`AI_PROVIDER=mock`,
+local recording storage).
 
 ---
 
@@ -29,6 +30,7 @@ recording storage).
 | Client state | TanStack Query (server state), Zustand (session, theme, socket) |
 | Forms | react-hook-form + the shared zod schemas; sonner for toasts |
 | Drag and drop | dnd-kit (mouse, touch and keyboard) |
+| Charts | Recharts (its own lazy chunk; every chart also a table) |
 | Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
 | Database | MongoDB Atlas + Mongoose |
 | Cache / jobs | Redis (ioredis) + BullMQ (post-meeting AI job, worker in-process) |
@@ -69,10 +71,11 @@ npm run dev
 
 Then open <http://localhost:5173> and press **Try Live Demo** — no sign-up
 needed. You get a guest identity of your own (a generated name like "Amber
-Otter") in a seeded team with three colleagues, three past meetings that
-already have transcripts, summaries, chat and action items, and a task board
-with work in every column. Press it again in a private window and you are a
-second, different person in the same team, on the same board.
+Otter") in a seeded team with three colleagues, three detailed past meetings
+with transcripts, summaries, chat and action items, eight weeks of shorter
+meetings before those (so **Analytics** has a history to chart), and a task
+board with work in every column. Press it again in a private window and you
+are a second, different person in the same team, on the same board.
 
 | URL | What |
 | --- | --- |
@@ -94,7 +97,7 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm run lint:fix` | ESLint with autofix |
 | `npm run typecheck` | `tsc --noEmit` in every workspace |
 | `npm test` | Vitest suites in every workspace |
-| `npm run test:e2e` | Playwright: two guests on one board (create, drag, live move, comment + mention), action item → task, demo identity, history search + export, two browsers in one meeting, record → AI → edit → export (needs Docker + seed; cleans up after itself). `E2E_BASE_URL` / `E2E_API_URL` point it at other ports |
+| `npm run test:e2e` | Playwright: analytics (charts, tables, live update, safe CSV, 360 px), two guests on one board (create, drag, live move, comment + mention), action item → task, demo identity, history search + export, two browsers in one meeting, record → AI → edit → export (needs Docker + seed; cleans up after itself). `E2E_BASE_URL` / `E2E_API_URL` point it at other ports |
 | `npm run dev:https` | Dev over HTTPS on the LAN, for testing from a phone |
 | `npm run eval:ai -w @intellmeet/server` | Scores the AI provider on the sample transcripts in `server/fixtures/` |
 | `npm run worker -w @intellmeet/server` | Standalone AI worker (only with `RUN_WORKER_IN_PROCESS=false`) |
@@ -156,6 +159,10 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | GET / PATCH / DELETE | `/api/tasks/:id` | Bearer | Read / edit / delete a task (samples: admin only; delete: creator or admin) |
 | POST | `/api/tasks/:id/move` | Bearer | Move: `{ columnId, afterId, beforeId }` |
 | GET / POST | `/api/tasks/:id/comments` | Bearer | A task's comments / add one (`@mentions` notify) |
+| GET | `/api/analytics/overview` | Bearer | Headline numbers for a team and range: `teamId`, `from`, `to` (`YYYY-MM-DD`, default the last 8 weeks), `tz` (IANA, default UTC). Members only |
+| GET | `/api/analytics/weekly` | Bearer | Per week (Monday-based, in `tz`): meetings, minutes, average length and attendance, action items raised and done |
+| GET | `/api/analytics/members` | Bearer | Per person: meetings attended and hosted, time in meetings, messages, action items owned and done, task completion, activity |
+| GET | `/api/analytics/export` | Bearer | The weekly or members table as CSV (`dataset=weekly\|members`), formula-safe |
 | GET | `/api/notifications` | Bearer | List notifications + unread count |
 | PATCH | `/api/notifications/:id/read` | Bearer | Mark one read |
 | PATCH | `/api/notifications/read-all` | Bearer | Mark all read |
@@ -201,7 +208,7 @@ Signalling is relayed without being parsed — media never touches the server.
 | `/app/meetings` | protected | **Meeting history** — upcoming/live/past, search across titles, summaries and transcripts, pagination (all in the URL) |
 | `/app/meetings/:id` | protected | **Meeting page** — tabs for summary, action items, transcript (search, click-to-seek), chat and recording; host editing; export |
 | `/app/tasks` | protected | **Team board** (drag and drop, live) and **My tasks**; `?board=`, `?task=`, `?view=mine` in the URL |
-| `/app/analytics` | protected | Wired and guarded; arrives in Phase 9 |
+| `/app/analytics` | protected | **Analytics** — KPI tiles and five charts (each with a summary and a table), team and period filters, CSV export; `?team=`, `?weeks=` or `?from=&to=` in the URL |
 
 **Client auth.** The access token lives in a plain JavaScript variable — never
 in `localStorage`, which any script on the origin can read. A hard reload
@@ -353,6 +360,47 @@ duplicated events never undo a newer change.
 `docs/architecture.md` explains the fractional ordering, the versioning and
 the permission rule.
 
+## Analytics
+
+`/app/analytics` shows one team at a time, for a period of whole weeks (the
+last 4, 8 or 12, or any dates up to a year) counted in your own time zone,
+weeks starting on Monday. Everything on the page follows the one filter row,
+and all of it is in the URL.
+
+- **Headline numbers:** meetings, time in meetings (and the average length),
+  people per meeting, the share of action items done (and how many are
+  overdue), and the share of tasks completed.
+- **Charts:** meetings per week (line); action items raised and done per week
+  (stacked columns); what became of the action items: done, open, overdue
+  (donut); task completion by member (bars); most active members: meetings
+  attended, action items owned, tasks completed (stacked bars).
+- **Accessible by construction:** every chart has a one-sentence summary
+  under its title and a table with every number it draws. Screen readers get
+  the table (the SVG itself is hidden from them); **Show table** puts it on
+  screen for keyboard users and anyone who wants the figures. The colours
+  were checked for colour-blind separation in both themes, status colours
+  always come with an icon and a word, and nothing animates for people who
+  asked their system for reduced motion.
+- **Export CSV:** the weekly table or the members table, for exactly the team
+  and period on screen. Cells that a spreadsheet would run as a formula (a
+  name starting `=`, `+`, `-`, `@`) are prefixed with `'`, and every text cell
+  is quoted.
+
+**What counts.** A meeting counts once it has ended and somebody joined it.
+An action item is done when it was ticked off on the meeting page or its task
+is in a column marked done; items belong to the week of the meeting that
+raised them. Tasks count by when they were created, on any of the team's
+boards. People are counted once per meeting, however often they rejoined.
+
+**Who sees what.** Every analytics endpoint checks that the caller belongs to
+the team, before any cache is read; anyone else gets "not found". A demo guest
+belongs to the demo team (and any team it creates), and sees only those.
+
+**Caching.** Each aggregation is cached in Redis for five minutes, and a
+team's entries are dropped as soon as something that feeds them changes: a
+task written, a meeting ended or deleted, minutes corrected, a done column
+changed. Names and membership are never cached, so a rename shows at once.
+
 ## Demo mode: a guest per sign-in
 
 **Try Live Demo** (`POST /api/auth/demo`) creates a **new guest account** each
@@ -378,9 +426,20 @@ Guests clean up after themselves:
   endpoint is public and creates accounts, so beyond that it answers 503 until
   the sweep has made room.
 
+**The seeded history.** Before the three detailed sample meetings come eight
+weeks of shorter ones (22 meetings: syncs, sprint plannings and retros, design
+critiques, customer debriefs), each with a summary, decisions, owned action
+items and a short transcript, and 13 of their action items finished as tasks.
+They are ordinary meetings marked `seeded`, so the history page lists them,
+search finds them, and the analytics count them like any other; the demo
+cleanup never deletes them. Their dates are relative to the week the seed
+runs in, and the housekeeping sweep moves them (and the samples) forward
+once a week, so "the last eight weeks" are always full. Re-seeding updates
+them in place.
+
 **The shared demo board.** All guests share the seeded team's board: six
 sample tasks (one deliberately overdue, three made from the sample meetings'
-action items). A guest can move anything, add tasks and delete its own, but
+action items), and the history's finished tasks at the bottom of Done. A guest can move anything, add tasks and delete its own, but
 cannot edit or delete the samples, remove anyone else's tasks, or change the
 columns. Moves are undone later instead: once nobody has touched the board for
 `DEMO_BOARD_RESET_IDLE_MIN` (60) minutes, the samples go back where the seed
@@ -465,6 +524,21 @@ Nothing secret is committed. Each workspace ships a documented
 - `client/.env` — only `VITE_`-prefixed variables reach the browser, so they
   are **public by definition**.
 
+### Demo-day tuning (set these on Render if needed)
+
+Every one of these has a sensible default and is documented in
+`server/.env.example`; none needs setting for a normal deployment.
+
+| Variable | Default | What it controls |
+| --- | --- | --- |
+| `RATE_LIMIT_DEMO_PER_15_MIN` | 60 | "Try Live Demo" sign-ins per IP per 15 minutes (a room of judges shares one IP; each makes 1–2) |
+| `RATE_LIMIT_REFRESH_PER_15_MIN` | 600 | Session refreshes per IP per 15 minutes (one per page load, one per open tab every 15 minutes) |
+| `DEMO_MAX_GUESTS` | 200 | Guest accounts that may exist at once; beyond it demo sign-in answers 503 until the sweep makes room |
+| `DEMO_DATA_TTL_HOURS` | 6 | Idle guests, and demo content older than this, are swept |
+| `DEMO_CLEANUP_INTERVAL_MIN` | 30 | How often that sweep runs |
+| `DEMO_BOARD_RESET_IDLE_MIN` | 60 | The demo board's sample tasks go back in place after this many quiet minutes |
+| `LIVE_MEETING_IDLE_MIN` | 10 | A live meeting nobody is connected to is ended after this many minutes (checked every 5) |
+
 ## Git hooks
 
 Hooks live in `.husky/` and activate once the repo is a git repository:
@@ -486,7 +560,7 @@ npm run prepare   # points git at .husky/
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
 Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
-Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban ✅ · Phase 9 analytics ·
+Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban ✅ · Phase 9 analytics ✅ ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.
 

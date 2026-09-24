@@ -12,6 +12,7 @@ import {
   type TranscriptionResult,
 } from '../../lib/ai/types.js';
 import { logger } from '../../lib/logger.js';
+import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { Meeting, type MeetingDocument } from '../meetings/meeting.model.js';
 import { invalidateMeeting } from '../meetings/meeting.service.js';
 import { readLocalRecording } from '../recordings/recording.storage.js';
@@ -251,6 +252,8 @@ export async function processMeeting(
   );
 
   await setStatus(meeting, 'done');
+  // New action items to count.
+  await invalidateTeamAnalytics([meeting.teamId]);
 
   await notifySummaryReady(
     { id: meeting._id.toString(), teamId: meeting.teamId.toString(), title: meeting.title },

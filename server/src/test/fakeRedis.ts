@@ -70,6 +70,12 @@ export function createFakeRedis(): Redis & FakeRedis {
       return removed;
     },
     expire: async () => 1,
+    // Analytics cache generations.
+    incr: async (key: string) => {
+      const next = Number(store.get(key) ?? '0') + 1;
+      store.set(key, String(next));
+      return next;
+    },
 
     // --- sets (presence) ---
     sadd: async (key: string, ...members: string[]) => {
