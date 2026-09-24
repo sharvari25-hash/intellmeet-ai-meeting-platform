@@ -5,6 +5,278 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 6 — Recording & AI Meeting Intelligence ✅
+
+**Completed:** 2026-09-24
+
+### Phase 5 follow-up: the remote tile stayed grey for ~30 seconds
+
+**Symptom (manual test, two windows on one PC):** both windows showed *2 in
+the room* and chat worked, but the remote tile was a blank grey box for 30+
+seconds before video appeared.
+
+There were two problems: one cosmetic, and a real connection bug underneath it.
+
+**1. The tile showed an empty `<video>`.** `ontrack` fires when the remote
+offer is *applied*, long before ICE connects or a frame is decoded. The tile
+treated "has a stream" as "has video", hid its spinner and revealed an element
+with nothing in it: the grey box. The tile now reveals the video only once
+`videoWidth > 0` (the first decoded frame) and shows a visible **Connecting…**
+until then. Once frames have arrived, a later drop keeps the last picture and
+shows the reconnecting icon instead of flashing back to "Connecting…".
+
+**2. Roughly one join in six never connected at all.** Measured rather than
+guessed: a throwaway Playwright probe wrapped `RTCPeerConnection` in both
+browsers and logged every signalling state, ICE state and candidate, joining
+the same room repeatedly.
+
+| Configuration | Joins | Stalled |
+| --- | --- | --- |
+| Before the fix | 21 | **3** (plus 3 of 15 with the candidate pool disabled) |
+| After the fix | 15 probes + 10 e2e runs | **0** |
+
+A stalled join looked like this in the log: both sides reached `stable`, the
+polite side had rolled back its own offer to accept the other's, and then
+**never gathered a single ICE candidate for its answer**. With no candidates,
+ICE never started, so it never reached `failed`. That meant the
+ICE-restart-on-failure recovery never fired, and the call sat blank
+indefinitely.
+
+The root cause was ours, not the browser's. `MeshTransport` had *both* peers
+add their tracks the instant they learned about each other, so **every single
+join was a guaranteed offer collision**. Perfect negotiation resolves a
+collision correctly on paper, but it resolves it with a rollback, and Chrome
+intermittently fails to gather for the answer that follows a rollback made
+before its first candidate. Disabling the ICE candidate pool (the first
+suspect) did not help: 3 stalls in 15.
+
+**Why it eventually "worked" after ~30s:** almost certainly a *second* bug. The
+room hook listed `onForceMute` as an effect dependency, and `MeetingRoom`
+built that callback from the media object, which is new on every render of
+the page. So toggling the microphone or camera made the room **leave and
+rejoin**, tearing down every peer connection. That rebuild is what unstuck
+the stalled connection. Confirmed in the probe: one mic toggle produced a
+`closed` connection plus a brand-new one.
+
+**Fixes:**
+
+| Fix | Why |
+| --- | --- |
+| **The newcomer offers; people already in the room wait for its offer** | Removes the collision from every join, so nothing is rolled back. Existing members create the connection on `room:user-joined` but hold their tracks back (`awaitingOffer`) and attach them to the offered transceivers when the offer arrives, so one round trip suffices. Perfect negotiation stays for later renegotiations. A newcomer with no camera or mic still offers, using receive-only transceivers. |
+| **A connection watchdog** | Belt and braces for any future stall: if a peer is still in `new` after 5s, a member still waiting for an offer stops waiting and offers itself, and otherwise the impolite side calls `restartIce()`, which forces fresh gathering on both ends. Up to three attempts, then a "Could not connect" toast. `connecting` (checks in progress) is left alone. |
+| **`onForceMute` read through a ref** | A toggle no longer rejoins the room. |
+| **Tile waits for the first frame** | See above. |
+
+**Tests that would have caught it:**
+
+- The Playwright spec now wraps `RTCPeerConnection` with an init script and
+  asserts, in both browsers, that the live connection reaches `connected` and
+  that every remote `<video>` has `videoWidth > 0`, within 4.5s. That budget is
+  deliberately below the 5s watchdog, so a stall rescued by the watchdog still
+  fails the test. It also toggles the mic and asserts there is still exactly
+  one peer connection.
+- **Mutation check:** with the *old* `MeshTransport` restored, the new spec
+  failed 2 of 6 runs; the old spec had never failed. With the fix it passed
+  10 of 10.
+- Unit tests: who holds tracks and who offers, receive-only transceivers
+  without media, all watchdog paths (timing, impolite-only, cancelled on
+  connect or leave, gives up after three), the tile's states, and a hook test
+  proving a new `onForceMute` identity does not emit `room:leave` or a second
+  `room:join`.
+
+### Built
+
+- **Recording (host only).** `MeetingRecorder` mixes the host's microphone and
+  every remote peer into one Web Audio graph and records it with
+  `MediaRecorder` (Opus, 32 kbps, 10s timeslices). Sources are added and
+  removed as people join and leave mid-recording.
+- **Recording indicator for everyone**, over `recording:state` (host only on
+  the server), carried on the roster so a late joiner sees it too, and cleared
+  if the recording tab disappears.
+- **Two upload paths, chosen by the server** (`GET
+  /api/meetings/:id/recording/upload-target`):
+  - Cloudinary configured: a signed direct upload from the browser, then
+    `POST /api/meetings/:id/recording`. The URL is pinned to our own cloud and
+    recordings folder, because the worker downloads it (an SSRF guard).
+  - No Cloudinary: `PUT /api/meetings/:id/recording/file` with the raw audio,
+    stored under `server/.data/recordings`. **This is why the whole flow works
+    today with no accounts.**
+- **The `process-meeting` BullMQ job**, with the worker in-process
+  (`RUN_WORKER_IN_PROCESS=true`) and a standalone `npm run worker` for the
+  scalable path:
+  1. download (split with ffmpeg into 10-minute chunks above the provider's
+     limit);
+  2. transcribe and store the timestamped Transcript;
+  3. analyse into strict JSON `{summary, keyDecisions, actionItems}`,
+     validated with zod, with one repair attempt;
+  4. fuzzy-match each assignee to a participant;
+  5. save the MeetingInsight.
+
+  `aiStatus` moves `queued → transcribing → summarizing → done` with `ai:status`
+  pushed to the team, and a `summary_ready` notification goes to everyone who
+  attended.
+- **Retries and failure:** 3 attempts with exponential backoff (10s, 20s…).
+  Non-retryable errors (deleted meeting, missing file, rejected key) skip the
+  remaining attempts. The final failure stores a UI-safe message, and the host
+  gets a **Retry** button.
+- **Providers:** `GroqProvider` (Whisper + Llama 3.3 70B, JSON mode),
+  `GeminiProvider` (both steps, key in a header), a `FallbackProvider`
+  (Groq → Gemini when both keys exist), and `MockProvider`.
+- **Meeting page** (`/app/meetings/:id`): live step-by-step progress, error
+  plus Retry, summary, key decisions, action items with owner and due date
+  (unmatched names flagged), and a timestamped transcript. Dashboard rows
+  link to it and show an AI badge that updates live, and notifications now
+  link to their meeting or room.
+- **Three seeded past meetings** in the demo team (sprint planning, launch
+  retro, design review), each with a transcript, summary, decisions and owned
+  action items. They are marked `seeded: true`, and the demo cleanup never
+  deletes them, even at `-- 0`.
+- **Evaluation script** (`npm run eval:ai`): runs the configured provider over
+  the sample transcripts in `server/fixtures/` and prints every produced item
+  next to the reference, with owner/deadline ticks and recall/precision.
+- **The e2e suite cleans up after itself**: specs prefix their meetings with
+  `E2E `, and a global teardown deletes them through the API.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Server decides the upload target** | Only the server knows whether Cloudinary is configured. A discriminated union (`cloudinary` / `server`) keeps the client to one code path, and the no-account path makes the feature testable today. |
+| **Raw body for the local upload, not multipart** | The browser holds one Blob. `express.raw` with a route-level limit avoids a multipart dependency for one endpoint, and the global 1 MB JSON cap does not apply to it. |
+| **A queue interface in front of BullMQ** | BullMQ runs Lua scripts on a real Redis, which the unit suite deliberately does not have. Tests use a `MemoryQueue` and call `processMeeting` directly; the running server and the e2e test use BullMQ. |
+| **Atomic status change, not job-id dedupe** | `findOneAndUpdate({aiStatus: {$nin: [in progress]}})` means a double-clicked upload cannot enqueue twice. A fixed BullMQ job id would also silently swallow a legitimate retry after a failure. |
+| **`analyze()` shared by every LLM provider** | Prompting, JSON extraction, zod validation and the single repair turn live in one tested function (`analyzeWithLlm`); providers only implement `complete()`. |
+| **Exactly one repair attempt** | The repair replays the conversation with the model's bad reply and the exact zod issues, which fixes the usual failures ("Friday" instead of a date, a missing field). A model that fails twice will not succeed on the same prompt a third time, and the queue's own retry is the better place for another attempt. |
+| **The prompt states the meeting date and weekday** | Otherwise "by Friday" cannot become a date. The schema *requires* `YYYY-MM-DD`, so a vague value triggers a repair rather than reaching a task board. |
+| **Conservative assignee matching** | Every spoken token must match the account name (initials and small typos allowed), and a tie returns *nobody*. A wrong owner silently puts a task on somebody else's board; no owner lets the host choose. Unmatched names are kept and flagged, not dropped. |
+| **Retryable vs permanent errors** | 429/5xx/network retry with backoff; 401/403, missing files and deleted meetings fail immediately instead of burning three attempts and a minute of backoff. |
+| **UI error messages built from status codes only** | `describeFailure` never includes a provider's response text, so a key echoed back by a vendor can never reach the page. |
+| **Mock provider reads the transcript** | Canned output would make the eval meaningless. Simple rules ("we agreed" is a decision, "I'll…" is owned by the speaker) give a real baseline, 73%, that a model has to beat. |
+| **`ai:status` goes to the team room** | By the time a summary is ready everyone has usually left the call, and any team member can open the page. |
+| **Narrow cache invalidation on `ai:status`** | Invalidating all `['meetings']` would refetch the room's by-code query, which returns 409 for an ended meeting and would replace the "meeting has ended" screen with an error. Found while wiring it, and unit-tested. |
+| **Seeded dates shift by whole weeks** | Transcripts say "by Friday". Reference deadlines only stay true if Friday is still a Friday after the history is moved to look recent. |
+| **`@ffmpeg-installer/ffmpeg` instead of `ffmpeg-static`** | `ffmpeg-static` downloads its binary in an install script, and this project's npm install-script policy blocks that (verified: the binary was missing). The installer ships binaries as per-platform optional packages with no script, so it works the same locally, in CI and in Docker. `FFMPEG_PATH` can point at a system binary instead. |
+| **Recording is audio only** | The transcript is what the AI needs. At 32 kbps an hour is ~14 MB, under Groq's 25 MB limit without splitting. Composite video was optional in the plan. |
+
+### Bugs found while building
+
+1. **A text index made transcripts impossible to insert.** MongoDB text indexes
+   treat a field called `language` as a per-document stemming language, so
+   `language: null` failed to insert, and so would any language Mongo's text
+   search doesn't support (`"tamil"`, which Whisper returns for a Tamil
+   meeting). Found by a demo cleanup test. Fixed with `language_override:
+   'textSearchLanguage'`. The already-built index in the local database was
+   dropped so the corrected one gets built on the next start.
+2. **The mock never found "Decision: ..." lines**: `decision:` sat inside a
+   `\b…\b` group, and there is no word boundary between a colon and a space.
+   Found by a unit test.
+3. **Refetching after `ai:status` would break the ended-meeting screen** (see
+   decisions). Caught before it shipped.
+4. **Deleting a meeting left its chat and notifications behind**, so a
+   "summary ready" could link to "Meeting not found". Deletion now cascades to
+   messages, transcripts, insights, notifications and local recording files.
+5. **The e2e suite had left 72 meetings** in the shared demo workspace, pushing
+   the seeded history off the dashboard. The suite now deletes what it
+   creates.
+
+### AI evaluation (mock baseline)
+
+`npm run eval:ai -w @intellmeet/server` over the three fixtures, with
+`AI_PROVIDER=mock`:
+
+| | Result |
+| --- | --- |
+| Key decisions | recall 57%, precision 100% |
+| Action items | recall 82%, precision 82% |
+| Of found items | owner 100%, deadline 89% |
+| **Action items fully correct** (found + owner + deadline) | **8/11 = 73%** |
+
+These rules are the floor, not the target. The misses are exactly where
+keyword rules fall down: a request phrased over two turns, "the twenty-fifth",
+a decision stated as "Decision: …" versus "Right. Decision: …". Run the same
+command with a Groq key to measure the real model against the >85% target;
+the script prints every pairing so the numbers can be checked by reading.
+
+### Known limitations
+
+- **Whisper does not identify speakers.** Real transcripts have
+  `speaker: null`, so the model attributes "I'll do it" from context and
+  names, not from who said it. The seeded meetings and fixtures do have
+  speakers. The fix is per-participant recording or a diarisation model,
+  which would pair naturally with an SFU (server-side egress per track).
+- **Only the host records**, and the host's tab must stay open until the
+  upload finishes. Leaving mid-recording still stops and uploads, but closing
+  the tab outright loses the recording.
+- **Local recording storage is not durable on Render** (the disk is wiped per
+  deploy). Production must set the Cloudinary variables. Deleting a meeting
+  does not delete its Cloudinary asset.
+- **The recording can't be played back in the UI yet.** `GET
+  /api/meetings/:id/recording/audio` exists (with Range support), but it needs
+  the bearer token, so the Phase 7 player will fetch it as a blob.
+- **Very long transcripts** (over 48k characters, ≈ 90 minutes) have their
+  middle elided before analysis; the opening and closing are kept.
+- **The mock cannot hear.** With `AI_PROVIDER=mock` every recording produces
+  the same scripted stand-up, using the real participants' names.
+- **`jobs/meetingQueue.ts` is 33% covered by unit tests.** Its BullMQ half
+  needs a real Redis; the e2e recording test exercises it end to end instead.
+- **The eval measures analysis, not speech recognition.** The fixtures are
+  transcripts; measuring word error rate needs real audio.
+- **Playwright uses the installed Chrome** (`channel: 'chrome'`); CI in
+  Phase 11 needs the bundled Chromium.
+- One unexplained client test failure was seen in about 15 full runs (the
+  meeting page test, 10s, while the dev server was rebuilding). It could not
+  be reproduced in 9 further runs; its first wait was given a 5s allowance
+  like the routing test's.
+
+### Manual test script
+
+Prerequisites: `docker compose up -d`, `npm run seed -w @intellmeet/server`,
+`npm run dev`.
+
+1. <http://localhost:5173> → **Try Live Demo**. The dashboard's recent
+   meetings include three with a **Summary ready** badge (scroll, or run the
+   demo cleanup if other meetings crowd them out). Open **Sprint 14
+   planning**: summary, two decisions, four action items with owners and
+   dates, and the transcript.
+2. **New meeting** → *IntellMeet Demo Team* → **Start now** → **Join
+   meeting**.
+3. Incognito window: sign in as `ada@intellmeet.app` / `DemoPassword123`,
+   open the invite link, **Join meeting**. The remote tiles show
+   **Connecting…** briefly, then video.
+4. Window 1 (host): **Record**. Both windows show a red **Recording** badge.
+   Ada has no Record button.
+5. Talk for a few seconds, then **Stop recording**. Expect the toast
+   "Recording saved".
+6. Window 1: **End for all** → **Summary and action items**. The page walks
+   through *Recording received → Transcribing → Writing the summary* and fills
+   in by itself. The bell shows **Meeting summary ready**, which links back
+   here.
+7. To see a failure: stop the API mid-processing, or set `AI_PROVIDER=groq`
+   with a wrong key. After the retries the page shows the reason and a
+   **Retry** button (host only).
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm test` | ✅ **398 passed** (287 server, 111 client) |
+| `npm run test:e2e` | ✅ **3 passed**: mesh with frames verified, controls, and record → AI summary |
+| Server coverage | ✅ **91.6% statements**, 81.6% branches |
+| Horizontal overflow at 360px | ✅ none, dashboard and meeting page |
+| `npm run build` | ✅ all 3 workspaces |
+
+### Next phase
+
+**Phase 7 — Post-Meeting Dashboard & History:** a meetings list with
+upcoming/live/past filters and text search across titles, summaries and
+transcripts (the text indexes exist now), the meeting page grown into tabs
+(summary, action items, searchable transcript with click-to-seek audio, chat
+log, recording), host editing of AI output, and Markdown/PDF export.
+
+---
+
 ## Phase 5 — Meeting Room (Real-Time Video Core) ✅
 
 **Completed:** 2026-09-24

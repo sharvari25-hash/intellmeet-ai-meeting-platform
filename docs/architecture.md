@@ -100,9 +100,10 @@ person. A `LiveKitTransport` implementing the same interface replaces
    `rtc:answer` and `rtc:ice-candidate` become dead code. Room membership,
    chat, presence and notifications stay exactly as they are — they are not
    WebRTC concerns.
-3. **Recording (Phase 6) gets easier, not harder.** Server-side egress
-   replaces the browser-side `MediaRecorder` mix, which also fixes the current
-   limitation that only the host can record.
+3. **Recording gets easier, not harder.** Server-side egress replaces the
+   browser-side `MediaRecorder` mix built in Phase 6. That removes the
+   limitation that only the host can record (and must keep the tab open), and
+   gives one track per speaker, which the transcript's speaker labels need.
 
 **When to make the switch.** When meetings routinely exceed six people, or
 when server-side recording is wanted. Neither is true yet, and an SFU
@@ -184,3 +185,87 @@ The three flags that make it work (`makingOffer`, `ignoreOffer`,
 `settingRemoteAnswerPending`) are not bookkeeping — they *are* the algorithm,
 and `client/src/lib/webrtc/MeshTransport.test.ts` covers both sides of a
 collision explicitly.
+
+### Who offers at join time
+
+Perfect negotiation makes collisions *survivable*; it does not make them
+free. Phase 5 had both peers add their tracks the moment they learned about
+each other, so **every join collided** and went through a rollback. Measured
+in Phase 6, about one join in six then stalled: after rolling back its own
+offer, Chrome's polite side intermittently never gathered ICE candidates for
+its answer, ICE stayed in `new`, and nothing ever retried.
+
+So a join no longer collides:
+
+```
+ newcomer                      server                      already here
+    │── room:join ──────────────►│                              │
+    │◄── room:participants ──────│── room:user-joined ─────────►│
+    │  addPeer(initiator: true)  │      addPeer(initiator: false)│
+    │  tracks added → offer ─────┼─────────────────────────────►│
+    │                            │   tracks attached to the      │
+    │◄───────────────────────────┼──────────── answer ───────────│
+```
+
+The newcomer offers, having just received the roster. Everyone already in the
+room creates the connection when told somebody joined, but holds its tracks
+until that offer arrives (`awaitingOffer`), then attaches them to the offered
+transceivers and answers. That's one round trip with no rollback.
+
+A **watchdog** covers anything that still goes wrong: a connection still in
+`new` after 5s is either unblocked (a member still waiting stops waiting and
+offers itself) or restarted (`restartIce()` from the impolite side only, so
+the two ends do not collide again). The Playwright spec asserts `connected`
+and decoded frames within 4.5s, under the watchdog's 5s, so a stall that
+only the watchdog rescues still fails the test.
+
+---
+
+## Recording and the AI pipeline
+
+```mermaid
+sequenceDiagram
+    participant Host as Host browser
+    participant API as API (Express)
+    participant CDN as Cloudinary
+    participant Q as BullMQ (Redis)
+    participant W as Worker (in-process)
+    participant AI as AIProvider
+
+    Host->>Host: Web Audio mixes every stream → MediaRecorder (Opus 32 kbps)
+    Host->>API: GET /meetings/:id/recording/upload-target
+    alt Cloudinary configured
+        API-->>Host: { kind: cloudinary, signature }
+        Host->>CDN: signed upload (never touches the API)
+        Host->>API: POST /meetings/:id/recording { url, publicId }
+    else no Cloudinary
+        API-->>Host: { kind: server }
+        Host->>API: PUT /meetings/:id/recording/file (raw audio → local disk)
+    end
+    API->>API: aiStatus none|done|failed → queued (atomic)
+    API->>Q: add process-meeting
+    Q->>W: job
+    W->>AI: transcribe (ffmpeg splits > limit)
+    W->>W: save Transcript, ai:status transcribing → summarizing
+    W->>AI: analyze → strict JSON, zod, one repair turn
+    W->>W: fuzzy-match owners, save MeetingInsight
+    W-->>Host: ai:status done + notify:new summary_ready
+```
+
+- **Why the host's browser records.** In a mesh, no server ever hears
+  everyone; the host's browser is the one place all the audio meets. An SFU
+  would move this server-side (LiveKit egress), which would also allow
+  per-speaker tracks and fix the missing speaker labels in Whisper
+  transcripts.
+- **Why the queue sits behind an interface.** BullMQ needs a real Redis for
+  its Lua scripts. The unit suite has none, so it uses a `MemoryQueue` and
+  calls the job body directly. The e2e recording test runs the real BullMQ
+  path.
+- **Providers are swappable by configuration.** `AI_PROVIDER=mock | groq |
+  gemini`; Groq plus a Gemini key gives an automatic fallback per call.
+  Prompting, validation and repair are shared by every LLM provider, so they
+  are tested once.
+- **Failure handling.** 429/5xx/network errors retry with exponential backoff.
+  Permanent errors (deleted meeting, missing file, rejected key) stop at once.
+  The final failure stores a UI-safe message built from status codes, never
+  from provider responses.

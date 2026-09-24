@@ -2,9 +2,10 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
-**Status:** 🚧 In development — Phase 5 (meeting room) complete. Real WebRTC
-video meetings work end to end: lobby, mesh video, screen share, chat and host
-controls.
+**Status:** 🚧 In development — Phase 6 (recording & AI) complete. Real WebRTC
+meetings work end to end, and a recorded meeting turns itself into a
+transcript, a summary, key decisions and owned action items. Everything runs
+with no third-party accounts (`AI_PROVIDER=mock`, local recording storage).
 
 ---
 
@@ -26,9 +27,9 @@ controls.
 | Forms | react-hook-form + the shared zod schemas; sonner for toasts |
 | Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
 | Database | MongoDB Atlas + Mongoose |
-| Cache / jobs | Redis (ioredis) + BullMQ *(Phase 6)* |
+| Cache / jobs | Redis (ioredis) + BullMQ (post-meeting AI job, worker in-process) |
 | Real-time | Socket.io (+ Redis adapter); WebRTC mesh (perfect negotiation) |
-| AI | Groq (Whisper + Llama), Gemini fallback, Mock provider *(Phase 6)* |
+| AI | Groq (Whisper + Llama 3.3), Gemini fallback, deterministic Mock provider |
 | Testing | Vitest, Supertest, React Testing Library, Playwright |
 | Tooling | ESLint 9 (flat config), Prettier, Husky, lint-staged, commitlint |
 | Deploy | Vercel (client) + Render (server) — **no AWS** |
@@ -63,7 +64,8 @@ npm run dev
 ```
 
 Then open <http://localhost:5173> and press **Try Live Demo** — no sign-up
-needed. It drops you into a seeded team with three colleagues.
+needed. It drops you into a seeded team with three colleagues and three past
+meetings that already have transcripts, summaries and action items.
 
 | URL | What |
 | --- | --- |
@@ -87,6 +89,8 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm test` | Vitest suites in every workspace |
 | `npm run test:e2e` | Playwright: two browsers in one meeting (needs Docker + seed) |
 | `npm run dev:https` | Dev over HTTPS on the LAN, for testing from a phone |
+| `npm run eval:ai -w @intellmeet/server` | Scores the AI provider on the sample transcripts in `server/fixtures/` |
+| `npm run worker -w @intellmeet/server` | Standalone AI worker (only with `RUN_WORKER_IN_PROCESS=false`) |
 | `npm run format` | Prettier write |
 | `npm run format:check` | Prettier check (used in CI) |
 
@@ -124,6 +128,12 @@ Server coverage: `npm run test:coverage -w @intellmeet/server`.
 | POST | `/api/meetings/:id/end` | Bearer | End a meeting (host) |
 | DELETE | `/api/meetings/:id` | Bearer | Delete a non-live meeting (host) |
 | GET | `/api/meetings/:id/messages` | Bearer | Chat history (cursor paginated) |
+| GET | `/api/meetings/:id/recording/upload-target` | Bearer | Where to upload a recording: Cloudinary or this API (host) |
+| POST | `/api/meetings/:id/recording` | Bearer | Register a Cloudinary recording and queue the AI job (host) |
+| PUT | `/api/meetings/:id/recording/file` | Bearer | Upload the raw audio when Cloudinary is not configured (host) |
+| GET | `/api/meetings/:id/recording/audio` | Bearer | The recording's audio (Range supported) |
+| GET | `/api/meetings/:id/intelligence` | Bearer | AI status, transcript and insight in one response |
+| POST | `/api/meetings/:id/ai/retry` | Bearer | Re-queue a failed AI run (host) |
 | GET | `/api/notifications` | Bearer | List notifications + unread count |
 | PATCH | `/api/notifications/:id/read` | Bearer | Mark one read |
 | PATCH | `/api/notifications/read-all` | Bearer | Mark all read |
@@ -145,6 +155,7 @@ sides import the same constants instead of re-typing strings.
 | Room | `room:join` `room:leave` `room:participants` `room:user-joined` `room:user-left` `room:host-mute` `room:end` |
 | WebRTC | `rtc:offer` `rtc:answer` `rtc:ice-candidate` (targeted by socket id, relayed verbatim) |
 | Media | `media:toggle` |
+| Recording / AI | `recording:state` (host → room, drives the indicator), `ai:status` (server → team) |
 | Chat | `chat:send` `chat:message` `chat:typing` `chat:stop-typing` |
 | Presence | `presence:online` `presence:offline` |
 | Notifications | `notify:new` |
@@ -163,7 +174,8 @@ Signalling is relayed without being parsed — media never touches the server.
 | `/app` | protected | Dashboard — start a meeting, join by code, recent meetings |
 | `/app/teams`, `/app/teams/:id` | protected | Create/join a team, members, invite link |
 | `/app/settings` | protected | Display name, theme, backend health |
-| `/app/room/:code` | protected | **Meeting room** — lobby, mesh video, screen share, chat |
+| `/app/room/:code` | protected | **Meeting room** — lobby, mesh video, screen share, chat, recording |
+| `/app/meetings/:id` | protected | **Meeting page** — live AI progress, summary, decisions, action items, transcript |
 | `/app/meetings`, `/app/tasks`, `/app/analytics` | protected | Wired and guarded; their features land in Phases 7–9 |
 
 **Client auth.** The access token lives in a plain JavaScript variable — never
@@ -217,13 +229,53 @@ TURN_USERNAME=…
 TURN_CREDENTIAL=…
 ```
 
+## Recording & AI meeting intelligence
+
+The host presses **Record**. Every participant sees a red *Recording* badge,
+and the host's browser mixes everyone's audio (Web Audio) into one Opus track
+(`MediaRecorder`, ~32 kbps). On **Stop** the file is uploaded and a BullMQ job
+runs:
+
+1. **Download.** Anything over the provider's limit is split with ffmpeg into
+   10-minute chunks.
+2. **Transcribe** with Whisper (Groq) → a timestamped Transcript.
+3. **Analyse** with Llama → strict JSON `{summary, keyDecisions, actionItems}`,
+   validated with zod, with one repair round trip if the reply is invalid.
+4. **Match owners** fuzzily to the people who attended ("grace" → Grace
+   Hopper; an ambiguous name → no owner rather than the wrong one).
+5. **Save** the insight, push `ai:status` at every step, and notify attendees.
+
+The meeting page (`/app/meetings/:id`) shows the steps live, then the result.
+Failures retry with exponential backoff; a final failure shows the reason and
+a **Retry** button to the host.
+
+**Works with no accounts.** `AI_PROVIDER=mock` (the default) is deterministic
+and needs no key. Without Cloudinary, recordings are uploaded to the API and
+kept in `server/.data/recordings`. To use the real services, add to
+`server/.env`:
+
+```bash
+AI_PROVIDER=groq
+GROQ_API_KEY=…                 # https://console.groq.com/keys
+GEMINI_API_KEY=…               # optional: automatic fallback
+CLOUDINARY_CLOUD_NAME=…        # production: Render's disk is not durable
+CLOUDINARY_API_KEY=…
+CLOUDINARY_API_SECRET=…
+```
+
+**Measuring accuracy.** `npm run eval:ai -w @intellmeet/server [-- --provider
+groq]` runs the analysis over the sample transcripts in `server/fixtures/` and
+prints every produced decision and action item next to a hand-written
+reference, with owner and deadline checks. The mock gets 73% of action items
+fully correct; that is the floor a real model has to beat.
+
 ## Demo workspace hygiene
 
 Every reviewer signs into the same demo account, so their teams and meetings
 would otherwise pile up in each other's way. The server sweeps anything the
 demo account created more than `DEMO_DATA_TTL_HOURS` (6) ago, every
-`DEMO_CLEANUP_INTERVAL_MIN` (30) minutes. The **seeded team is never removed**,
-and neither is anything recent — which is what makes the sweep safe to run
+`DEMO_CLEANUP_INTERVAL_MIN` (30) minutes. The **seeded team and its seeded past
+meetings are never removed**, and neither is anything recent — which is what makes the sweep safe to run
 while people are using the product, unlike a reset button that any reviewer
 could press mid-call.
 
@@ -317,7 +369,7 @@ npm run prepare   # points git at .husky/
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
 Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
-Phase 6 recording + AI · Phase 7 history · Phase 8 Kanban · Phase 9 analytics ·
+Phase 6 recording + AI ✅ · Phase 7 history · Phase 8 Kanban · Phase 9 analytics ·
 Phase 10 quality · Phase 11 Docker/K8s/CI · Phase 12 deploy · Phase 13
 observability · Phase 14 docs & demo.
 
