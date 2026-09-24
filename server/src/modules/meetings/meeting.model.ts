@@ -69,9 +69,14 @@ const meetingSchema = new Schema(
 // and the status filter narrows it further.
 meetingSchema.index({ teamId: 1, status: 1, createdAt: -1 });
 
-// Text search across titles. Phase 6 adds Transcript and MeetingInsight to
-// the searchable set; they are separate collections, so each gets its own
-// text index rather than this one growing.
+// The history's "Past" filter, most recently ended first. Past meetings are
+// the set that grows without bound; upcoming and live stay small enough to
+// sort in memory.
+meetingSchema.index({ teamId: 1, status: 1, endedAt: -1 });
+
+// Text search across titles and descriptions. Summaries and transcripts live
+// in their own collections with their own text indexes; the history search
+// (meeting.history.ts) queries all three and merges the rankings.
 meetingSchema.index({ title: 'text', description: 'text' });
 
 meetingSchema.index({ seedKey: 1 }, { unique: true, sparse: true });

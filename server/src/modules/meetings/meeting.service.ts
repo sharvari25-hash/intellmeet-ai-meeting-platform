@@ -5,6 +5,8 @@ import {
   type ListMeetingsQuery,
   type Meeting as MeetingDto,
   type MeetingList,
+  type MeetingListItem,
+  type MeetingSearchMatch,
   type UpdateMeetingInput,
 } from '@intellmeet/shared';
 import { DEFAULT_TTL_SEC, cacheDel, cacheKeys, cached } from '../../lib/cache.js';
@@ -17,6 +19,7 @@ import { Transcript } from '../ai/transcript.model.js';
 import { deleteLocalRecording } from '../recordings/recording.storage.js';
 import { Team } from '../teams/team.model.js';
 import { User } from '../users/user.model.js';
+import { describeMatches, loadPreviews, rankMeetings } from './meeting.history.js';
 import { Meeting, type MeetingDocument } from './meeting.model.js';
 
 /** Room codes are 7 characters from a 30-letter unambiguous alphabet. */
@@ -77,13 +80,28 @@ export async function toMeetingDto(
   return withViewer(await buildMeetingView(meeting), viewerId);
 }
 
-async function buildMeetingView(meeting: MeetingDocument): Promise<MeetingView> {
-  // One `$in` for the host plus every participant, rather than a lookup per
-  // person. Meetings routinely have a dozen participants.
-  const userIds = [meeting.hostId, ...meeting.participants.map((p) => p.userId)];
-  const users = await User.find({ _id: { $in: userIds } });
-  const byId = new Map(users.map((user) => [user._id.toString(), user]));
+type UserLookup = Map<string, { _id: Types.ObjectId; name: string; avatarUrl?: string | null }>;
 
+/**
+ * Everyone a set of meetings mentions - hosts and participants - in one
+ * `$in`, rather than a lookup per person per meeting. A history page of
+ * twenty meetings is one query, not twenty.
+ */
+async function loadPeople(meetings: MeetingDocument[]): Promise<UserLookup> {
+  const ids = new Set<string>();
+  for (const meeting of meetings) {
+    ids.add(meeting.hostId.toString());
+    for (const participant of meeting.participants) ids.add(participant.userId.toString());
+  }
+  const users = await User.find({ _id: { $in: [...ids] } }).select('name avatarUrl');
+  return new Map(users.map((user) => [user._id.toString(), user]));
+}
+
+async function buildMeetingView(meeting: MeetingDocument): Promise<MeetingView> {
+  return viewFrom(meeting, await loadPeople([meeting]));
+}
+
+function viewFrom(meeting: MeetingDocument, byId: UserLookup): MeetingView {
   const host = byId.get(meeting.hostId.toString());
 
   const participants = meeting.participants.flatMap((participant) => {
@@ -193,6 +211,22 @@ export async function createMeeting(
   return toMeetingDto(meeting, hostId);
 }
 
+/**
+ * The order each filter reads most naturally in. Upcoming meetings are a
+ * schedule, so soonest first; live and past meetings are history, so most
+ * recent first. `_id` breaks ties, so page boundaries are stable.
+ */
+const SORT_BY_STATUS = {
+  all: { createdAt: -1, _id: -1 },
+  scheduled: { scheduledAt: 1, _id: 1 },
+  live: { startedAt: -1, _id: -1 },
+  ended: { endedAt: -1, _id: -1 },
+} as const;
+
+/**
+ * The meeting history: filtered by status, ordered for that status, and with
+ * `q` ranked by relevance across titles, summaries and transcripts.
+ */
 export async function listMeetings(query: ListMeetingsQuery, userId: string): Promise<MeetingList> {
   // Scope to the teams the user actually belongs to. Passing an explicit
   // teamId narrows further but can never widen beyond this set.
@@ -202,27 +236,68 @@ export async function listMeetings(query: ListMeetingsQuery, userId: string): Pr
     await assertTeamMember(query.teamId, userId);
   }
 
-  const filter: Record<string, unknown> = {
+  const scope: Record<string, unknown> = {
     teamId: query.teamId ? new Types.ObjectId(query.teamId) : { $in: teamIds },
   };
-
-  if (query.status) filter.status = query.status;
-  if (query.q) filter.$text = { $search: query.q };
+  if (query.status) scope.status = query.status;
 
   const skip = (query.page - 1) * query.limit;
 
+  if (query.q) {
+    const ranked = await rankMeetings(query.q, scope);
+    const pageIds = ranked.slice(skip, skip + query.limit).map((hit) => hit.id);
+    const docs = await Meeting.find({ _id: { $in: pageIds } });
+    const byId = new Map(docs.map((doc) => [doc._id.toString(), doc]));
+
+    return {
+      meetings: await toListItems(
+        pageIds.flatMap((id) => byId.get(id) ?? []),
+        userId,
+        query.q,
+      ),
+      total: ranked.length,
+      page: query.page,
+      limit: query.limit,
+    };
+  }
+
   // countDocuments runs alongside the page query rather than after it.
   const [docs, total] = await Promise.all([
-    Meeting.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit),
-    Meeting.countDocuments(filter),
+    Meeting.find(scope)
+      .sort(SORT_BY_STATUS[query.status ?? 'all'])
+      .skip(skip)
+      .limit(query.limit),
+    Meeting.countDocuments(scope),
   ]);
 
   return {
-    meetings: await Promise.all(docs.map((doc) => toMeetingDto(doc, userId))),
+    meetings: await toListItems(docs, userId, null),
     total,
     page: query.page,
     limit: query.limit,
   };
+}
+
+/** A page of meetings as history rows: the DTO, its summary preview, and why it matched. */
+async function toListItems(
+  meetings: MeetingDocument[],
+  viewerId: string,
+  q: string | null,
+): Promise<MeetingListItem[]> {
+  const [people, previews, matches] = await Promise.all([
+    loadPeople(meetings),
+    loadPreviews(meetings.map((meeting) => meeting._id)),
+    q ? describeMatches(meetings, q) : Promise.resolve(new Map<string, MeetingSearchMatch>()),
+  ]);
+
+  return meetings.map((meeting) => {
+    const id = meeting._id.toString();
+    return {
+      ...withViewer(viewFrom(meeting, people), viewerId),
+      preview: previews.get(id) ?? null,
+      match: matches.get(id) ?? null,
+    };
+  });
 }
 
 /**
