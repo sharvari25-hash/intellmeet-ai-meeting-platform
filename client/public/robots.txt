@@ -1,0 +1,5 @@
+# Without this file the SPA fallback answers /robots.txt with index.html,
+# which crawlers (and Lighthouse's SEO audit) read as an invalid robots file.
+# The signed-in app is behind authentication, so there is nothing to hide.
+User-agent: *
+Allow: /

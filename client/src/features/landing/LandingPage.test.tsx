@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import { authPayload, renderWithProviders } from '@/test/utils';
 import { useAuthStore } from '@/stores/authStore';
+import { useThemeStore } from '@/stores/themeStore';
 import { LandingPage } from './LandingPage';
 
 describe('<LandingPage />', () => {
@@ -71,5 +72,22 @@ describe('<LandingPage />', () => {
 
     expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
     expect(screen.getByRole('link', { name: 'Get started' })).toHaveAttribute('href', '/register');
+  });
+
+  it('loads the theme menu when it is pressed, and opens it straight away', async () => {
+    useThemeStore.setState({ theme: 'system' });
+    const { user } = renderWithProviders(<LandingPage />);
+
+    // A real, labelled button from the start, though the menu is not loaded.
+    const button = screen.getByRole('button', { name: 'Theme: system. Change theme' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    await user.click(button);
+    await user.click(await screen.findByRole('menuitem', { name: 'Dark' }));
+
+    expect(useThemeStore.getState().theme).toBe('dark');
+    expect(
+      await screen.findByRole('button', { name: 'Theme: dark. Change theme' }),
+    ).toBeInTheDocument();
   });
 });
