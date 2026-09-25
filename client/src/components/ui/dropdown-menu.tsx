@@ -3,7 +3,22 @@ import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
 import { CheckIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const DropdownMenu = DropdownMenuPrimitive.Root;
+/**
+ * A menu, not a modal: `modal` is off unless asked for.
+ *
+ * Radix's modal menus hide the rest of the page from assistive technology
+ * (`aria-hidden`) while leaving it focusable, which axe reports as
+ * aria-hidden-focus (Phase 10 audit). The WAI-ARIA menu button pattern does
+ * not make a menu modal: Escape and Tab close it, and focus goes back to its
+ * button, either way.
+ */
+function DropdownMenu({
+  modal = false,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  return <DropdownMenuPrimitive.Root modal={modal} {...props} />;
+}
+
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 
 function DropdownMenuContent({

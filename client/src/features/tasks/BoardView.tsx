@@ -18,6 +18,7 @@ import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { GripVertical, Plus } from 'lucide-react';
 import { canManageBoards, type BoardDetail, type Task } from '@intellmeet/shared';
 import { Button } from '@/components/ui/button';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { BoardColumn } from './BoardColumn';
 import { groupByColumn, neighboursOf } from './boardCache';
 import { NameDialog } from './NameDialog';
@@ -50,6 +51,7 @@ export function BoardView({
   const move = useMoveTask(board.id);
   const columnActions = useColumnActions(board.id);
   const [addingColumn, setAddingColumn] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   const settled = useMemo<Layout>(() => {
     const grouped = groupByColumn(detail);
@@ -199,7 +201,9 @@ export function BoardView({
         </div>
       </div>
 
-      <DragOverlay>
+      {/* The drop glides the card into place with the Web Animations API,
+          which the stylesheet's reduced-motion rule cannot reach. */}
+      <DragOverlay dropAnimation={reducedMotion ? null : undefined}>
         {active ? (
           // A picture of the card being dragged; the announcements speak for it.
           <div
