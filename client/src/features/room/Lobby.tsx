@@ -67,7 +67,7 @@ export function Lobby({ meeting, media, onJoin }: Props) {
           {!media.starting && (!media.videoEnabled || media.audioOnly || !media.stream) && (
             <div className="absolute inset-0 grid place-items-center">
               <Avatar className="size-20">
-                {user?.avatarUrl && <AvatarImage src={user.avatarUrl} alt="" />}
+                {user?.avatarUrl && <AvatarImage src={user.avatarUrl} size={80} alt="" />}
                 <AvatarFallback className="text-2xl">{initials(name)}</AvatarFallback>
               </Avatar>
             </div>

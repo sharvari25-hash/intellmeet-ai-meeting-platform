@@ -1,5 +1,6 @@
 import * as React from 'react';
 import * as AvatarPrimitive from '@radix-ui/react-avatar';
+import { cloudinaryImage } from '@/lib/cloudinary';
 import { cn } from '@/lib/utils';
 
 function Avatar({ className, ...props }: React.ComponentProps<typeof AvatarPrimitive.Root>) {
@@ -12,11 +13,22 @@ function Avatar({ className, ...props }: React.ComponentProps<typeof AvatarPrimi
   );
 }
 
-function AvatarImage({ className, ...props }: React.ComponentProps<typeof AvatarPrimitive.Image>) {
+/**
+ * `size` is the avatar's width in CSS pixels (32 unless the Avatar is sized
+ * otherwise), so a Cloudinary avatar is fetched at that size rather than as
+ * uploaded (see `cloudinaryImage`).
+ */
+function AvatarImage({
+  className,
+  src,
+  size = 32,
+  ...props
+}: React.ComponentProps<typeof AvatarPrimitive.Image> & { size?: number }) {
   return (
     <AvatarPrimitive.Image
       data-slot="avatar-image"
       className={cn('aspect-square size-full', className)}
+      src={src ? cloudinaryImage(src, size) : src}
       {...props}
     />
   );
