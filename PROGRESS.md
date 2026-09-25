@@ -76,6 +76,21 @@ done.
 3. **Two tabs of one browser echoed.** Both joined as participants and
    connected to each other; one leaving marked the person as gone.
 
+### Found by CI (PR #12)
+
+**A menu could not be reopened while it faded out.** The journey failed on
+the runner twice (the test and its retry), waiting 110 s for the PDF item
+after pressing Export. A closed menu stays on the page for its 150 ms
+fade-out and still treats a press outside it as a reason to close, so a
+press on its own button opened it and closed it again in the same event.
+The bug is Radix's and older than this phase (a real mouse hit it with modal
+menus too). But a modal menu hides the page from Playwright's role queries
+until it is gone, so the spec used to wait. On the runner the Markdown
+download took 40 ms and Export was pressed 88 ms after the menu closed; here
+the download takes about a second. `DropdownMenuContent` now ignores presses
+on its own button, as Radix's non-modal dialog does. A unit test holds the
+menu mid-fade and presses again (`dropdown-menu.test.tsx`).
+
 ### Decisions & trade-offs
 
 | Decision | Why |
@@ -120,8 +135,9 @@ done.
 | `npm run format:check` | ✅ (generated reports in `docs/quality/` excluded) |
 | `npm run typecheck` | ✅ clean in all 3 workspaces |
 | `npm run test:coverage -w @intellmeet/server` | ✅ **514 passed**, 94.79 / 85.58 / 94.87 / 94.79 % (gate 90 / 80 / 90 / 90) |
-| `npm run test:coverage -w @intellmeet/client` | ✅ **211 passed**, 78.93 / 82.39 / 74.21 / 78.93 % |
+| `npm run test:coverage -w @intellmeet/client` | ✅ **214 passed**, 78.98 / 82.25 / 74.25 / 78.98 % |
 | `npx playwright test` (production build) | ✅ **17 passed** in 3.9 min; whole suite twice more 33 / 34 (the flake above) |
+| After the menu fix (CI, above) | ✅ journey 3 / 3; whole suite **17 passed** in 2.9 min |
 | axe, 24 page states × 2 themes | ✅ 0 violations |
 | Lighthouse, landing page, mobile (12 runs) | ✅ performance median **85** (71-91), accessibility 100, SEO 100, best practices 96; LCP 1.9-2.3 s |
 | Lighthouse, landing page, desktop | ✅ 98-100; LCP 0.5 s |

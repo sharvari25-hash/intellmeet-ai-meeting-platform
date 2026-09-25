@@ -32,7 +32,7 @@ live Vercel/Render deployment, which does not exist yet (Phase 12).
 | Suite | Tests | Coverage (statements / branches / functions / lines) |
 | --- | --- | --- |
 | Server (Vitest, Supertest, real Socket.io, in-memory MongoDB) | **514** passed | **94.79 / 85.58 / 94.87 / 94.79 %** (gate 90 / 80 / 90 / 90) |
-| Client (Vitest, Testing Library) | **211** passed | **78.93 / 82.39 / 74.21 / 78.93 %** (reported, not gated) |
+| Client (Vitest, Testing Library) | **214** passed | **78.98 / 82.25 / 74.25 / 78.98 %** (reported, not gated) |
 | End to end (Playwright, production build) | **17** passed | - |
 
 Critical server modules (statements / branches / functions / lines):
@@ -56,12 +56,23 @@ room edge cases (2). Stability, all on the production build:
 | Final run of the whole suite | 17 / 17 |
 | New specs, three times each | accessibility + keyboard 21 / 21; edge cases + journey 8 / 9 |
 | Whole suite twice in a row | 33 / 34 |
+| After the menu fix below: the journey three times, then the whole suite | 3 / 3, 17 / 17 |
 
 The two failures are the same pre-existing flake (see "Known limitations"):
 a lazy page's chunk failed to download from `vite preview` in a two-browser
 test. CI retries a failed test once. Two further failures during these runs
 were in the new specs themselves (a seeded meeting paginated off the first
 page; a title shared by a retried run's leftovers) and are fixed.
+
+**On CI (PR #12) the journey failed, twice,** and it was the app's fault: a
+menu pressed open again within 150 ms of choosing from it stayed shut. The
+closed menu is still on the page while it fades out, and it took the press
+on its own button for a press outside itself. The runner reached the PDF
+export 88 ms after the Markdown one; a laptop takes about a second, which is
+why it never failed here. Once the menus stopped being modal, nothing held
+the test back until the fade had ended. Menus now leave presses on their own
+button to the button (`components/ui/dropdown-menu.tsx`), with a unit test
+that presses mid-fade.
 
 ## 2. Accessibility
 
