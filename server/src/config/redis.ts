@@ -41,7 +41,15 @@ export async function connectRedis(url: string): Promise<Redis> {
   next.on('reconnecting', () => logger.warn('[redis] reconnecting'));
   next.on('end', () => logger.warn('[redis] connection closed'));
 
-  await next.connect();
+  try {
+    await next.connect();
+  } catch (error) {
+    // Without this the rejected client keeps reconnecting in the background,
+    // and a caller that carries on without Redis (the seed, run from a laptop
+    // that cannot reach production's private Redis) logs an error every retry.
+    next.disconnect();
+    throw error;
+  }
   client = next;
 
   logger.info({ url: redactRedisUrl(url) }, '[redis] connected');

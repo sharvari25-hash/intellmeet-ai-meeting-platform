@@ -96,6 +96,14 @@ meetingSchema.index({ seedKey: 1 }, { unique: true, sparse: true });
 // indexes above all lead with teamId, so they cannot serve it.
 meetingSchema.index({ status: 1, lastActiveAt: 1 });
 
+// The lost-AI-run sweep (ai.recovery.ts), every few minutes: runs still in
+// progress whose status has not changed for a while.
+meetingSchema.index({ aiStatus: 1, updatedAt: 1 });
+
+// "Is this Cloudinary recording already some other meeting's?", asked when a
+// recording is registered (recording.service.ts). Most meetings have none.
+meetingSchema.index({ 'recording.publicId': 1 }, { sparse: true });
+
 export type MeetingDocument = HydratedDocument<InferSchemaType<typeof meetingSchema>>;
 
 export const Meeting = model('Meeting', meetingSchema);

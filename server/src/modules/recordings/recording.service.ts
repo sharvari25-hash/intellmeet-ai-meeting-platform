@@ -17,6 +17,7 @@ import {
   toMeetingDto,
 } from '../meetings/meeting.service.js';
 import { createUploadSignature } from '../uploads/upload.service.js';
+import { destroyCloudinaryRecordings, RECORDING_PUBLIC_ID } from './recording.cloudinary.js';
 import {
   deleteLocalRecording,
   localRecordingPath,
@@ -78,6 +79,18 @@ interface RecordingFields {
   mimeType: string;
 }
 
+/** Deletes a recording that no meeting will point at, wherever it is stored. */
+async function discardRecording(
+  meetingId: string,
+  recording: { storage?: string | null; publicId?: string | null },
+): Promise<void> {
+  if (!recording.publicId) return;
+  if (recording.storage === 'local') await deleteLocalRecording(recording.publicId);
+  if (recording.storage === 'cloudinary') {
+    await destroyCloudinaryRecordings([{ meetingId, publicId: recording.publicId }]);
+  }
+}
+
 /**
  * Attaches a recording and queues it for processing, atomically.
  *
@@ -104,19 +117,18 @@ async function attachAndQueue(
     { new: true },
   );
 
+  const meetingId = meeting._id.toString();
+
   if (!updated) {
-    // Nothing was attached, so the file just written must not linger.
-    if (recording.storage === 'local') await deleteLocalRecording(recording.publicId);
+    // Nothing was attached, so the file just stored must not linger - unless
+    // it is the very one already attached (the same registration sent twice).
+    if (recording.publicId !== previous?.publicId) await discardRecording(meetingId, recording);
     throw AppError.conflict('This meeting’s recording is already being processed');
   }
 
   // A second recording of the same meeting replaces the first.
-  if (
-    previous?.storage === 'local' &&
-    previous.publicId &&
-    previous.publicId !== recording.publicId
-  ) {
-    await deleteLocalRecording(previous.publicId);
+  if (previous?.publicId && previous.publicId !== recording.publicId) {
+    await discardRecording(meetingId, previous);
   }
 
   await invalidateMeeting(updated);
@@ -130,11 +142,51 @@ async function attachAndQueue(
   return toMeetingDto(updated, userId);
 }
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The recording's delivery URL, if `raw` is exactly that and nothing else.
+ *
+ * The worker downloads this URL, so it is pinned to more than our cloud:
+ * to the plain `video/upload` URL of the very asset named by `publicId`
+ * (with the optional version segment Cloudinary adds, and a file extension).
+ * That rules out another host (server-side request forgery), another asset
+ * in our cloud, transformations, and `fetch` URLs, with which Cloudinary
+ * would download any address on the internet for us. The URL is parsed first,
+ * so dot segments and percent-encoded tricks are resolved before the check,
+ * and the normalised form is what gets stored.
+ */
+export function ownRecordingUrl(raw: string, cloudName: string, publicId: string): string | null {
+  if (!RECORDING_PUBLIC_ID.test(publicId)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+
+  const plain =
+    url.protocol === 'https:' &&
+    url.hostname === 'res.cloudinary.com' &&
+    url.port === '' &&
+    url.username === '' &&
+    url.password === '' &&
+    url.search === '' &&
+    url.hash === '';
+  if (!plain) return null;
+
+  const delivery = new RegExp(
+    `^/${escapeRegExp(cloudName)}/video/upload/(?:v\\d+/)?${escapeRegExp(publicId)}\\.[a-z0-9]{2,5}$`,
+  );
+  return delivery.test(url.pathname) ? url.href : null;
+}
+
 /**
  * Registers a recording the browser uploaded to Cloudinary.
  *
- * The URL is later *downloaded by the server*, so it is pinned to our own
- * cloud and recordings folder. Accepting any URL would let a host point the
+ * The URL is later *downloaded by the server*, so it must be this app's own
+ * upload (`ownRecordingUrl`). Accepting any URL would let a host point the
  * job at an internal address - a server-side request forgery.
  */
 export async function saveCloudinaryRecording(
@@ -150,16 +202,27 @@ export async function saveCloudinaryRecording(
   const meeting = await getMeetingForHost(meetingId, userId);
   assertRecordable(meeting);
 
-  const expectedPrefix = `https://res.cloudinary.com/${config.cloudName}/`;
-  if (!input.url.startsWith(expectedPrefix)) {
-    throw AppError.badRequest('The recording URL must point at this app’s Cloudinary account');
-  }
-  if (!input.publicId.startsWith('intellmeet/recordings/')) {
+  if (!RECORDING_PUBLIC_ID.test(input.publicId)) {
     throw AppError.badRequest('The recording must be in the recordings folder');
   }
+  const url = ownRecordingUrl(input.url, config.cloudName, input.publicId);
+  if (!url) {
+    throw AppError.badRequest(
+      'The recording URL must be this recording’s own address on this app’s Cloudinary account',
+    );
+  }
+
+  // Deleting a meeting deletes its recording from Cloudinary, so a recording
+  // may belong to one meeting only. Otherwise a host could register another
+  // meeting's recording on their own meeting, then delete it by deleting theirs.
+  const claimed = await Meeting.exists({
+    _id: { $ne: meeting._id },
+    'recording.publicId': input.publicId,
+  });
+  if (claimed) throw AppError.conflict('This recording belongs to another meeting');
 
   return attachAndQueue(meeting, userId, {
-    url: input.url,
+    url,
     publicId: input.publicId,
     durationSec: Math.round(input.durationSec),
     storage: 'cloudinary',

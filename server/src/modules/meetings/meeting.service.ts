@@ -17,6 +17,7 @@ import { invalidateTeamAnalytics } from '../analytics/analytics.cache.js';
 import { Message } from '../chat/message.model.js';
 import { Notification } from '../notifications/notification.model.js';
 import { Transcript } from '../ai/transcript.model.js';
+import { destroyCloudinaryRecordings } from '../recordings/recording.cloudinary.js';
 import { deleteLocalRecording } from '../recordings/recording.storage.js';
 import { Task } from '../tasks/task.model.js';
 import { Team } from '../teams/team.model.js';
@@ -447,14 +448,15 @@ export async function deleteMeeting(meetingId: string, userId: string): Promise<
 
 /**
  * Removes everything that hangs off these meetings: chat, transcripts,
- * insights, notifications that link to them, and locally stored recordings.
- * Tasks made from them stay, unlinked.
+ * insights, notifications that link to them, and their recordings, on local
+ * disk or on Cloudinary. Tasks made from them stay, unlinked.
  *
- * Shared by host deletion and the demo cleanup, so neither can forget a
- * collection that a later phase adds. A notification pointing at a deleted
- * meeting would open "Meeting not found", so those go too. Cloudinary assets
- * are left alone - the API secret is needed to delete them, and an orphaned
- * file costs nothing until the free tier's storage is full.
+ * Shared by host deletion, the demo cleanup (guests included) and the seeded
+ * history's retirement, so none of them can forget a collection that a later
+ * phase adds. A notification pointing at a deleted meeting would open
+ * "Meeting not found", so those go too. A recording must not outlive its
+ * meeting: on Cloudinary it would stay playable by anyone with its URL. A
+ * Cloudinary failure is logged, never thrown (destroyCloudinaryRecordings).
  */
 export async function deleteMeetingArtifacts(
   meetings: Pick<MeetingDocument, '_id' | 'recording'>[],
@@ -481,6 +483,14 @@ export async function deleteMeetingArtifacts(
       meeting.recording?.storage === 'local' && meeting.recording.publicId
         ? deleteLocalRecording(meeting.recording.publicId)
         : Promise.resolve(),
+    ),
+  );
+
+  await destroyCloudinaryRecordings(
+    meetings.flatMap((meeting) =>
+      meeting.recording?.storage === 'cloudinary' && meeting.recording.publicId
+        ? [{ meetingId: meeting._id.toString(), publicId: meeting.recording.publicId }]
+        : [],
     ),
   );
 }

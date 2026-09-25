@@ -239,6 +239,9 @@ describe('POST /api/meetings/:id/recording (Cloudinary)', () => {
       'https://evil.example/recording.webm',
       'https://res.cloudinary.com/someone-else/video/upload/x.webm',
       'https://res.cloudinary.com.evil.example/test-cloud/x.webm',
+      'https://res.cloudinary.com@evil.example/test-cloud/video/upload/intellmeet/recordings/abc.webm',
+      'http://res.cloudinary.com/test-cloud/video/upload/v1/intellmeet/recordings/abc.webm',
+      'https://res.cloudinary.com:8443/test-cloud/video/upload/v1/intellmeet/recordings/abc.webm',
     ]) {
       await request(app)
         .post(`/api/meetings/${meetingId}/recording`)
@@ -250,16 +253,68 @@ describe('POST /api/meetings/:id/recording (Cloudinary)', () => {
     expect(queue.jobs).toHaveLength(0);
   });
 
-  it('refuses an asset outside the recordings folder', async () => {
+  it('refuses anything in our cloud but the named recording’s plain delivery URL', async () => {
+    const { host, meetingId } = await liveMeeting();
+    const cloud = 'https://res.cloudinary.com/test-cloud';
+
+    for (const url of [
+      // `fetch`: Cloudinary would download any address on the internet for us.
+      `${cloud}/video/fetch/https://evil.example/a.webm`,
+      `${cloud}/image/fetch/http://169.254.169.254/latest/meta-data`,
+      // Another asset than the one named by publicId.
+      `${cloud}/video/upload/v1/intellmeet/recordings/someone-elses.webm`,
+      `${cloud}/image/upload/v1/intellmeet/avatars/abc.webp`,
+      // A transformation, a query string, a fragment.
+      `${cloud}/video/upload/q_auto/v1/intellmeet/recordings/abc.webm`,
+      `${cloud}/video/upload/v1/intellmeet/recordings/abc.webm?x=1`,
+      `${cloud}/video/upload/v1/intellmeet/recordings/abc.webm#x`,
+      // Dot segments that resolve to somewhere else.
+      `${cloud}/video/upload/../fetch/https://evil.example/a.webm`,
+      `${cloud}/video/upload/%2e%2e/fetch/https://evil.example/a.webm`,
+    ]) {
+      await request(app)
+        .post(`/api/meetings/${meetingId}/recording`)
+        .set('Authorization', bearer(host))
+        .send(body(url))
+        .expect(400);
+    }
+
+    expect(queue.jobs).toHaveLength(0);
+  });
+
+  it('stores the normalised URL, not the one it was sent', async () => {
     const { host, meetingId } = await liveMeeting();
 
     await request(app)
       .post(`/api/meetings/${meetingId}/recording`)
       .set('Authorization', bearer(host))
       .send(
-        body('https://res.cloudinary.com/test-cloud/video/upload/x.webm', 'intellmeet/avatars/x'),
+        body(
+          'https://RES.cloudinary.com/elsewhere/../test-cloud/video/upload/v2/intellmeet/recordings/abc.webm',
+        ),
       )
-      .expect(400);
+      .expect(202);
+
+    const meeting = await Meeting.findById(meetingId).lean();
+    expect(meeting?.recording?.url).toBe(
+      'https://res.cloudinary.com/test-cloud/video/upload/v2/intellmeet/recordings/abc.webm',
+    );
+  });
+
+  it('refuses an asset outside the recordings folder', async () => {
+    const { host, meetingId } = await liveMeeting();
+
+    for (const publicId of [
+      'intellmeet/avatars/x',
+      'intellmeet/recordings/../avatars/x',
+      'intellmeet/recordings/',
+    ]) {
+      await request(app)
+        .post(`/api/meetings/${meetingId}/recording`)
+        .set('Authorization', bearer(host))
+        .send(body(`https://res.cloudinary.com/test-cloud/video/upload/${publicId}.webm`, publicId))
+        .expect(400);
+    }
   });
 });
 
