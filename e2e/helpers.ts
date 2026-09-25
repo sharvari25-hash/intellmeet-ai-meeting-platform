@@ -35,15 +35,24 @@ export interface DemoGuest {
  */
 export async function signInAsDemo(page: Page): Promise<DemoGuest> {
   await page.goto('/');
-
-  const [response] = await Promise.all([
-    page.waitForResponse(
-      (res) => res.url().endsWith('/api/auth/demo') && res.request().method() === 'POST',
-    ),
+  return pressTryLiveDemo(page, () =>
     page
       .getByRole('button', { name: /try live demo/i })
       .first()
       .click(),
+  );
+}
+
+/**
+ * The rest of a demo sign-in, once something presses the button: a click
+ * above, the Enter key in the keyboard-only walkthrough.
+ */
+export async function pressTryLiveDemo(page: Page, press: () => Promise<void>): Promise<DemoGuest> {
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (res) => res.url().endsWith('/api/auth/demo') && res.request().method() === 'POST',
+    ),
+    press(),
   ]);
 
   expect(response.status()).toBe(201);
