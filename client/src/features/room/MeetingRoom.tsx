@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
+  AppWindow,
   Check,
   Circle,
   Copy,
+  Info,
   Link2,
   ShieldAlert,
   Sparkles,
@@ -14,6 +16,14 @@ import { toast } from 'sonner';
 import type { Meeting } from '@intellmeet/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SPEAKING_THRESHOLD, createLevelMeter, type LevelMeter } from '@/lib/webrtc/audioLevel';
 import { getScreenStream, stopStream } from '@/lib/webrtc/devices';
@@ -65,6 +75,7 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
   const [unread, setUnread] = useState(0);
   const [copied, setCopied] = useState(false);
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
 
   // The host's "mute all" has to actually stop our track, which only the media
   // hook can do - so the room hook is handed a callback rather than the hook.
@@ -214,6 +225,34 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
     toast.success('Ending the meeting for everyone');
   }, [recorder, room]);
 
+  // The host leaving is a decision, not a click. Nobody else can record, mute
+  // everyone or end the meeting (there is no host migration: the host is also
+  // who may correct the AI's minutes afterwards), so the host is asked whether
+  // to end it or let the others carry on. Alone in the room, there is nothing
+  // to decide: the idle sweep ends an empty meeting.
+  const requestLeave = useCallback(() => {
+    if (isHost && peers.length > 0) setConfirmingLeave(true);
+    else leave();
+  }, [isHost, peers.length, leave]);
+
+  // Somebody is in the call without the host - they left, or have not come
+  // back yet. The room says so, rather than leaving people to discover that
+  // the host's controls are gone. Derived, so it clears the moment they return.
+  const hostAway = room.phase === 'live' && !isHost && !peers.some((peer) => peer.isHost);
+
+  // Another tab of this browser took the room over: this one stops sending.
+  const replaced = room.phase === 'replaced';
+  useEffect(() => {
+    if (!replaced) return;
+    if (recorder.phase === 'recording') void recorder.stop();
+    setScreenStream((current) => {
+      stopStream(current);
+      return null;
+    });
+    // Once per takeover; `recorder` is a new object on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replaced]);
+
   // A closed tab never runs React cleanup, so tell the room on the way out.
   useEffect(() => {
     const onUnload = () => room.leave();
@@ -241,6 +280,27 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
             </Link>
           </Button>
           <Button variant="outline" onClick={() => navigate('/app')}>
+            Back to the dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (replaced) {
+    return (
+      <div className="mx-auto max-w-md py-16 text-center">
+        <AppWindow aria-hidden="true" className="mx-auto size-8 text-muted-foreground" />
+        <h1 className="mt-4 text-xl font-semibold tracking-tight">
+          This meeting is open in another tab
+        </h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          You joined it from another tab of this browser, so this one stepped out: two tabs in one
+          call hear each other as an echo.
+        </p>
+        <div className="mt-6 flex flex-wrap justify-center gap-2">
+          <Button onClick={room.rejoin}>Use this tab instead</Button>
+          <Button variant="outline" onClick={onLeft}>
             Back to the dashboard
           </Button>
         </div>
@@ -317,6 +377,20 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
         </p>
       )}
 
+      {hostAway && (
+        <p
+          role="status"
+          className="flex items-start gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm"
+        >
+          <Info aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <span>
+            {meeting.hostName}, the host, is not in the call. It carries on without them, but only
+            the host can record, mute everyone or end it for all. It ends by itself once everyone
+            has left.
+          </span>
+        </p>
+      )}
+
       {peers.length + 1 > MESH_SOFT_CAP && (
         <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
           <Users aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-amber-600" />
@@ -353,7 +427,7 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
             onToggleAudio={media.toggleAudio}
             onToggleVideo={media.toggleVideo}
             onToggleScreen={toggleScreen}
-            onLeave={leave}
+            onLeave={requestLeave}
             onMuteEveryone={room.muteEveryone}
             onEndForEveryone={endForEveryone}
             recording={
@@ -414,6 +488,42 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog open={confirmingLeave} onOpenChange={setConfirmingLeave}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Leave the meeting?</DialogTitle>
+            <DialogDescription>
+              {peers.length === 1 ? 'Somebody is' : `${peers.length} people are`} still in the call.
+              You can end it for everyone, or leave and let them carry on without you: only you can
+              record, mute everyone or end it, and it ends by itself once everyone has left.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmingLeave(false)}>
+              Stay
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmingLeave(false);
+                leave();
+              }}
+            >
+              Leave, let them carry on
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setConfirmingLeave(false);
+                endForEveryone();
+              }}
+            >
+              End for everyone
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

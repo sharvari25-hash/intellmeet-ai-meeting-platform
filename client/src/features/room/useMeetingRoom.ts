@@ -8,7 +8,9 @@ import {
   type MediaState,
   type Participant,
   type RoomParticipants,
+  type RoomReplaced,
 } from '@intellmeet/shared';
+import { getDeviceId } from '@/lib/deviceId';
 import { MeshTransport } from '@/lib/webrtc/MeshTransport';
 import type { RemotePeer } from '@/lib/webrtc/types';
 import { getMessageHistory, messageKeys } from '@/features/meetings/meetings.api';
@@ -16,7 +18,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { useSocketStore } from '@/stores/socketStore';
 import { fetchIceServers, iceKeys } from './ice.api';
 
-export type RoomPhase = 'connecting' | 'live' | 'ended' | 'error';
+/** `replaced`: this browser joined the room from another tab, which took over. */
+export type RoomPhase = 'connecting' | 'live' | 'ended' | 'error' | 'replaced';
 
 export interface MeetingRoom {
   phase: RoomPhase;
@@ -35,6 +38,8 @@ export interface MeetingRoom {
   muteParticipant: (userId: string) => void;
   endForEveryone: () => void;
   leave: () => void;
+  /** Takes the room back from another tab of this browser. */
+  rejoin: () => void;
 }
 
 interface Options {
@@ -213,6 +218,20 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
       transportRef.current?.close();
     };
 
+    // This browser joined the room from another tab, and the server moved us
+    // out of it: two tabs would connect to each other and echo. Until the
+    // user asks for this tab back, a reconnect must not take the room back.
+    const onReplaced = (raw: unknown) => {
+      const data = raw as RoomReplaced;
+      if (!active || data.meetingId !== meetingId) return;
+      joined = false;
+      transportRef.current?.close();
+      transportRef.current = null;
+      setPeers([]);
+      setSelf(null);
+      setPhase('replaced');
+    };
+
     const onSocketError = (raw: unknown) => {
       const data = raw as { event: string; code: string; message: string };
 
@@ -235,10 +254,11 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
     // original join is still queued and goes out on connect.
     const onReconnect = () => {
       if (!active || !joined) return;
-      socket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+      socket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: getDeviceId() });
     };
 
     socket.on('connect', onReconnect);
+    socket.on(SOCKET_EVENTS.ROOM_REPLACED, onReplaced);
     socket.on(SOCKET_EVENTS.ROOM_PARTICIPANTS, onParticipants);
     socket.on(SOCKET_EVENTS.ROOM_USER_JOINED, onUserJoined);
     socket.on(SOCKET_EVENTS.ROOM_USER_LEFT, onUserLeft);
@@ -250,12 +270,13 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
     socket.on(SOCKET_EVENTS.ROOM_END, onRoomEnd);
     socket.on(SOCKET_EVENTS.ERROR, onSocketError);
 
-    socket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    socket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: getDeviceId() });
 
     return () => {
       active = false;
 
       socket.off('connect', onReconnect);
+      socket.off(SOCKET_EVENTS.ROOM_REPLACED, onReplaced);
       socket.off(SOCKET_EVENTS.ROOM_PARTICIPANTS, onParticipants);
       socket.off(SOCKET_EVENTS.ROOM_USER_JOINED, onUserJoined);
       socket.off(SOCKET_EVENTS.ROOM_USER_LEFT, onUserLeft);
@@ -343,6 +364,14 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
     transportRef.current?.close();
   }, [socket, meetingId]);
 
+  // The other tab is moved out in turn; the roster that answers this rebuilds
+  // the mesh here, exactly as on first join.
+  const rejoin = useCallback(() => {
+    if (!socket) return;
+    setPhase('connecting');
+    socket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: getDeviceId() });
+  }, [socket, meetingId]);
+
   const typingNames = useMemo(() => Object.values(typing).map((entry) => entry.name), [typing]);
 
   return {
@@ -361,5 +390,6 @@ export function useMeetingRoom({ meeting, localStream, onForceMute }: Options): 
     muteParticipant,
     endForEveryone,
     leave,
+    rejoin,
   };
 }

@@ -30,6 +30,64 @@ export async function connectedSocketIds(io: AppServer, meetingId: string): Prom
 }
 
 /**
+ * Moves somebody out of an older tab of the same browser, before their new
+ * tab is given the roster.
+ *
+ * Two tabs of one browser in one room connect to each other, and each plays
+ * the other's microphone back as an echo; nobody means to do it. The older
+ * tab is taken out of the room and told why (`room:replaced`), and everyone
+ * else drops its tile. Only the same `deviceId` counts: the same person on a
+ * phone and a laptop stays in twice, which is legitimate.
+ *
+ * Attendance is not touched - the person has not left, they changed tabs.
+ * Returns how many entries were replaced.
+ */
+export async function replaceSameDevice(
+  io: AppServer,
+  meetingId: string,
+  newcomer: { socketId: string; userId: string; deviceId?: string },
+): Promise<number> {
+  if (!newcomer.deviceId) return 0;
+
+  const roster = await getParticipants(meetingId);
+  const older = roster.filter(
+    (participant) =>
+      participant.userId === newcomer.userId &&
+      participant.deviceId === newcomer.deviceId &&
+      participant.socketId !== newcomer.socketId,
+  );
+  if (older.length === 0) return 0;
+
+  const room = socketRooms.meeting(meetingId);
+  const recording = await getRoomRecording(meetingId);
+
+  for (const tab of older) {
+    await removeParticipant(meetingId, tab.socketId);
+    // Out of the room on whichever instance holds it, so it stops receiving
+    // the room's broadcasts; then told why, so it can say so.
+    io.in(tab.socketId).socketsLeave(room);
+    io.to(tab.socketId).emit(SOCKET_EVENTS.ROOM_REPLACED, { meetingId });
+    io.to(room).emit(SOCKET_EVENTS.ROOM_USER_LEFT, {
+      meetingId,
+      socketId: tab.socketId,
+      userId: tab.userId,
+    });
+
+    // The old tab stops its recorder when told; the indicator goes with it.
+    if (recording?.socketId === tab.socketId) {
+      await setRoomRecording(meetingId, null);
+      io.to(room).emit(SOCKET_EVENTS.RECORDING_STATE, {
+        meetingId,
+        recording: false,
+        byUserId: tab.userId,
+      });
+    }
+  }
+
+  return older.length;
+}
+
+/**
  * Drops roster entries whose socket is no longer connected, and tells the room.
  *
  * Run when somebody joins, before they are sent the roster, so a newcomer

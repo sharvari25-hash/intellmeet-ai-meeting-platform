@@ -13,6 +13,7 @@ import {
   waitFor,
   type SocketHarness,
 } from '../test/socketHarness.js';
+import { getParticipants } from './presence.js';
 
 const app = createApp();
 
@@ -544,5 +545,98 @@ describe('recording indicator', () => {
 
     // Otherwise everyone left behind would be told they are still recorded.
     expect((await cleared).recording).toBe(false);
+  });
+});
+
+describe('one person in the room twice', () => {
+  const BROWSER = 'browser-0a1b2c3d';
+
+  it('moves a second tab of the same browser into the room, and tells the first why', async () => {
+    const { host, member, meetingId } = await liveMeeting();
+    const firstTab = await client(host);
+    const secondTab = await client(host);
+    const memberSocket = await client(member);
+
+    firstTab.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: BROWSER });
+    await waitFor(firstTab, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+    memberSocket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    await waitFor(memberSocket, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+
+    const replaced = waitFor<{ meetingId: string }>(firstTab, SOCKET_EVENTS.ROOM_REPLACED);
+    const memberSawLeave = waitFor<{ socketId: string }>(
+      memberSocket,
+      SOCKET_EVENTS.ROOM_USER_LEFT,
+    );
+
+    secondTab.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: BROWSER });
+    const roster = await waitFor<{ participants: Record<string, unknown>[] }>(
+      secondTab,
+      SOCKET_EVENTS.ROOM_PARTICIPANTS,
+    );
+
+    // The new tab is never offered a connection to the old one (itself).
+    expect(roster.participants.map((p) => p.socketId).sort()).toEqual(
+      [secondTab.id, memberSocket.id].sort(),
+    );
+    // Which browser somebody is on stays on the server.
+    expect(roster.participants.every((p) => !('deviceId' in p))).toBe(true);
+
+    expect(await replaced).toEqual({ meetingId });
+    expect((await memberSawLeave).socketId).toBe(firstTab.id);
+
+    // Changing tabs is not leaving the meeting.
+    const meeting = await Meeting.findById(meetingId);
+    const record = meeting?.participants.find((p) => p.userId.toString() === host.id);
+    expect(record?.leftAt).toBeNull();
+  });
+
+  it('keeps the same person on two devices in the room', async () => {
+    const { host, meetingId } = await liveMeeting();
+    const laptop = await client(host);
+    const phone = await client(host);
+
+    laptop.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: 'laptop-0a1b2c3d' });
+    await waitFor(laptop, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+    phone.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: 'phone-0a1b2c3d' });
+    const roster = await waitFor<{ participants: { socketId: string }[] }>(
+      phone,
+      SOCKET_EVENTS.ROOM_PARTICIPANTS,
+    );
+
+    expect(roster.participants.map((p) => p.socketId).sort()).toEqual([laptop.id, phone.id].sort());
+    expect((await getParticipants(meetingId)).map((p) => p.socketId).sort()).toEqual(
+      [laptop.id, phone.id].sort(),
+    );
+  });
+
+  it('counts somebody as present until the last of their devices leaves', async () => {
+    const { host, member, meetingId } = await liveMeeting();
+    const laptop = await client(host);
+    const phone = await client(host);
+    const memberSocket = await client(member);
+
+    laptop.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: 'laptop-0a1b2c3d' });
+    await waitFor(laptop, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+    phone.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId, deviceId: 'phone-0a1b2c3d' });
+    await waitFor(phone, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+    memberSocket.emit(SOCKET_EVENTS.ROOM_JOIN, { meetingId });
+    await waitFor(memberSocket, SOCKET_EVENTS.ROOM_PARTICIPANTS);
+
+    const hostRecord = async () =>
+      (await Meeting.findById(meetingId))?.participants.find(
+        (p) => p.userId.toString() === host.id,
+      );
+
+    // The laptop goes; the phone is still in the call.
+    let left = waitFor(memberSocket, SOCKET_EVENTS.ROOM_USER_LEFT);
+    laptop.emit(SOCKET_EVENTS.ROOM_LEAVE, { meetingId });
+    await left;
+    expect((await hostRecord())?.leftAt).toBeNull();
+
+    // Now the phone too: they have left.
+    left = waitFor(memberSocket, SOCKET_EVENTS.ROOM_USER_LEFT);
+    phone.emit(SOCKET_EVENTS.ROOM_LEAVE, { meetingId });
+    await left;
+    expect((await hostRecord())?.leftAt).toBeInstanceOf(Date);
   });
 });

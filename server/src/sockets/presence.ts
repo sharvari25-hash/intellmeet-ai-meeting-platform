@@ -40,6 +40,11 @@ export interface StoredParticipant {
   isHost: boolean;
   media: { audio: boolean; video: boolean; screen: boolean };
   joinedAt: string;
+  /**
+   * The browser the socket belongs to (see `roomJoinSchema`). Stored so a
+   * second tab of the same browser can be recognised; never sent to anyone.
+   */
+  deviceId?: string;
 }
 
 // --- Team presence ---------------------------------------------------------

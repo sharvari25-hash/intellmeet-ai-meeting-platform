@@ -49,7 +49,7 @@ function fakeSocket() {
     emitted,
     on: vi.fn(),
     off: vi.fn(),
-    emit: vi.fn((event: string) => {
+    emit: vi.fn((event: string, _payload?: unknown) => {
       emitted.push(event);
     }),
   };
@@ -175,5 +175,89 @@ describe('useMeetingRoom', () => {
     expect(result.current.phase).toBe('live');
     expect(result.current.self?.socketId).toBe('second-socket');
     expect(result.current.transport).not.toBe(firstTransport);
+  });
+
+  it('joins as this browser, with the same id every time', async () => {
+    renderHook(
+      () => useMeetingRoom({ meeting: MEETING, localStream: null, onForceMute: () => {} }),
+      { wrapper },
+    );
+    await settle();
+    await settle();
+
+    const joinPayloads = socket.emit.mock.calls
+      .filter(([event]) => event === SOCKET_EVENTS.ROOM_JOIN)
+      .map(([, payload]) => payload as { meetingId: string; deviceId: string });
+
+    expect(joinPayloads[0]?.meetingId).toBe(MEETING.id);
+    expect(joinPayloads[0]?.deviceId).toMatch(/^[0-9a-f]{32}$/);
+    // Every tab of the browser reads the same one back.
+    expect(localStorage.getItem('intellmeet-device')).toBe(joinPayloads[0]?.deviceId);
+  });
+
+  it('steps out when another tab takes over, and only comes back when asked', async () => {
+    const { result } = renderHook(
+      () => useMeetingRoom({ meeting: MEETING, localStream: null, onForceMute: () => {} }),
+      { wrapper },
+    );
+    await settle();
+    await settle();
+
+    const handler = (event: string) =>
+      socket.on.mock.calls.find(([name]) => name === event)?.[1] as (data?: unknown) => void;
+    const joins = () => socket.emitted.filter((event) => event === SOCKET_EVENTS.ROOM_JOIN);
+    const roster = {
+      meetingId: MEETING.id,
+      selfSocketId: 'this-tab',
+      participants: [
+        {
+          socketId: 'this-tab',
+          userId: MEETING.hostId,
+          name: 'Ada Lovelace',
+          avatarUrl: null,
+          isHost: true,
+          media: { audio: true, video: true, screen: false },
+          joinedAt: new Date().toISOString(),
+        },
+      ],
+      recording: false,
+    };
+
+    act(() => handler(SOCKET_EVENTS.ROOM_PARTICIPANTS)(roster));
+    expect(result.current.phase).toBe('live');
+
+    act(() => handler(SOCKET_EVENTS.ROOM_REPLACED)({ meetingId: MEETING.id }));
+    expect(result.current.phase).toBe('replaced');
+    expect(result.current.self).toBeNull();
+    expect(result.current.transport).toBeNull();
+
+    // A reconnect must not take the room back from the other tab.
+    act(() => handler('connect')());
+    expect(joins()).toHaveLength(1);
+
+    // "Use this tab instead".
+    act(() => result.current.rejoin());
+    expect(result.current.phase).toBe('connecting');
+    expect(joins()).toHaveLength(2);
+
+    act(() => handler(SOCKET_EVENTS.ROOM_PARTICIPANTS)(roster));
+    expect(result.current.phase).toBe('live');
+    expect(result.current.transport).not.toBeNull();
+  });
+
+  it('ignores a takeover of a different meeting', async () => {
+    const { result } = renderHook(
+      () => useMeetingRoom({ meeting: MEETING, localStream: null, onForceMute: () => {} }),
+      { wrapper },
+    );
+    await settle();
+    await settle();
+
+    const replaced = socket.on.mock.calls.find(
+      ([name]) => name === SOCKET_EVENTS.ROOM_REPLACED,
+    )?.[1] as (data: unknown) => void;
+    act(() => replaced({ meetingId: '507f1f77bcf86cd7994390ff' }));
+
+    expect(result.current.phase).toBe('connecting');
   });
 });

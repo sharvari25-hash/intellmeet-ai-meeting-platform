@@ -21,6 +21,8 @@ export const SOCKET_EVENTS = {
   ROOM_USER_LEFT: 'room:user-left',
   ROOM_HOST_MUTE: 'room:host-mute',
   ROOM_END: 'room:end',
+  /** Server -> one socket: the same browser joined this room from another tab. */
+  ROOM_REPLACED: 'room:replaced',
 
   // --- WebRTC signalling (relayed verbatim, never inspected) ---
   RTC_OFFER: 'rtc:offer',
@@ -86,10 +88,24 @@ export const socketRooms = {
 
 export const roomJoinSchema = z.object({
   meetingId: objectIdSchema,
+  /**
+   * A random id the browser keeps in localStorage, so it is the same in every
+   * tab of one browser and different on another device.
+   *
+   * One person in a room twice is allowed when it is two devices (a laptop
+   * sharing a screen, a phone for the camera), and a mistake when it is two
+   * tabs of one browser: the tabs connect to each other and each plays the
+   * other's microphone back. With this the server can tell the two apart and
+   * move the person to the newer tab. Optional, so an older client still
+   * joins (as a separate device).
+   */
+  deviceId: z.string().min(8).max(64).optional(),
 });
 export type RoomJoinPayload = z.infer<typeof roomJoinSchema>;
 
-export const roomLeaveSchema = roomJoinSchema;
+export const roomLeaveSchema = z.object({
+  meetingId: objectIdSchema,
+});
 
 /**
  * WebRTC signalling is targeted at one peer's socket id.
@@ -176,6 +192,12 @@ export const roomParticipantsSchema = z.object({
   recording: z.boolean(),
 });
 export type RoomParticipants = z.infer<typeof roomParticipantsSchema>;
+
+/** Sent to the older tab when the same browser joins the room from a newer one. */
+export const roomReplacedSchema = z.object({
+  meetingId: objectIdSchema,
+});
+export type RoomReplaced = z.infer<typeof roomReplacedSchema>;
 
 export const userLeftSchema = z.object({
   meetingId: objectIdSchema,
