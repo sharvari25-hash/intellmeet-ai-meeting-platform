@@ -5,6 +5,138 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Phase 10 — Quality Pass: Tests, Accessibility, Performance ✅
+
+**Completed:** 2026-09-25, after Phase 11 (it was skipped so the DevOps work
+came first). Every number, the audit findings and the reports:
+[`docs/quality-report.md`](./docs/quality-report.md) and
+[`docs/quality/`](./docs/quality/).
+
+### Before Phase 10: the gap audit
+
+Much of the phase already existed: server coverage at 94.8%, e2e for the
+meeting, the AI summary, the board and the history, reconnect-and-rejoin,
+abandoned meetings, lazy routes for the signed-in pages, and empty states
+everywhere. Missing or partly done: one continuous e2e journey, automated
+accessibility checks, a keyboard walkthrough, contrast in the dark theme,
+bundle analysis, Cloudinary transforms, Lighthouse in `docs/`, and three of
+the edge cases. The audit also found two bugs (below) in what was marked
+done.
+
+### Built
+
+- **`e2e/a11y.spec.ts`**: axe-core (WCAG 2.0/2.1 A + AA) on 24 page states,
+  dialogs and menus included, in the light and the dark theme, with reduced
+  motion. 7 findings at first, 0 now.
+- **`e2e/keyboard.spec.ts`**: the main flows with the keyboard alone (skip
+  link, demo, new meeting, lobby, chat, a room control, end; create, open and
+  move a task; the theme menu), checking a visible focus indicator at every
+  stop.
+- **`e2e/room-edge-cases.spec.ts`**: two tabs of one browser, and the host
+  leaving, in real browsers.
+- **The full journey** in `e2e/recording.spec.ts`: it now also chats before
+  recording, finds the chat in the meeting's record, and turns one of the
+  meeting's own action items into a task and moves it.
+- **Accessibility fixes**: four colour tokens (muted text, destructive and
+  success in the light theme, primary in the dark one) and sonner's
+  light-theme toast colours, all now ≥ 4.5:1; a focusable transcript list
+  when there is no recording; the analytics donut out of the tab order; menus
+  non-modal (Radix's modal menus hide the page with `aria-hidden` yet leave it
+  focusable); the board's drop animation honours reduced motion
+  (`useReducedMotion`, shared with the charts).
+- **Performance**: the public pages are lazy too (`routes/pages.ts`);
+  `"sideEffects": false` on the shared package; the landing page's theme menu
+  loads on intent (`ThemeToggleButton` + `DeferredThemeToggle`);
+  `robots.txt`. First load 202 → 154 kB gzipped (-24%).
+- **Bundle analysis**: `npm run analyze -w @intellmeet/client`
+  (`rollup-plugin-visualizer` + `client/scripts/bundle-summary.mjs`).
+- **Cloudinary transforms** for avatars (`lib/cloudinary.ts`, used by
+  `AvatarImage`): a face-cropped square at twice the display size, `f_auto`,
+  `q_auto`.
+- **Edge cases**: a socket refused at the handshake refreshes and reconnects;
+  duplicate tabs (a per-browser `deviceId`, `room:replaced`, the "open in
+  another tab" screen); the host's leave question and the "host is away"
+  notice; attendance that ends with a person's last device.
+
+### Bugs found by the audit
+
+1. **An expired token cut a meeting off for good.** Socket.io does not retry
+   a handshake the server refuses; it waits for `connect()`. The client
+   refreshed the token and never called it, so a socket that dropped after
+   the 15-minute access token expired stayed disconnected: no chat, no
+   signalling. Checked against socket.io-client 4.8 with a probe (refused →
+   `active: false`, `connected: false` with a fresh token; `connect()` fixes
+   it). Now: refresh, then reconnect; three refusals in a row and it stops.
+2. **A network drop could sign people out.** The same handler ran a session
+   refresh on every failed reconnect attempt, including plain transport
+   failures (the probe: `connect_error` four times in 1.5 s with the server
+   down). With the network or the API down the refresh fails, and a failed
+   refresh ends the session. Transport failures are now left to Socket.io's
+   backoff.
+3. **Two tabs of one browser echoed.** Both joined as participants and
+   connected to each other; one leaving marked the person as gone.
+
+### Decisions & trade-offs
+
+| Decision | Why |
+| --- | --- |
+| **Newest tab wins, but only within one browser** | The code already meant "one person, two devices" to work (a laptop presenting, a phone for the camera). A random id in localStorage is shared by a browser's tabs and by nothing else, so the server can tell the two cases apart without asking. |
+| **No host migration** | `hostId` also decides who may record and who may correct the AI's minutes. The host is asked on the way out instead, and the others are told while the host is away; an empty meeting still ends by itself. |
+| **Fix colour tokens, not components** | Every failure was a token used as text on a surface it failed on; fixing the token fixes every use, including ones axe never saw (a contrast table of every pairing found three more). |
+| **Menus non-modal by default** | The WAI-ARIA menu button pattern is not modal, and Radix's modal menus fail axe's aria-hidden-focus. Escape and Tab still close them and return focus. |
+| **Axe runs with reduced motion** | A toast checked mid-fade fails contrast it passes at rest; waiting for animations cannot work (the lobby's microphone meter never stops). The colours are the same either way. |
+| **Theme menu loaded on intent** | Measured three ways: loaded at start-up it delayed the first paint by 0.4 s; just after the first paint it added to blocking time; on hover, focus or press it costs the first load nothing. |
+| **Lighthouse on the production build, port 5173** | `vite preview` gzips like a CDN; 5173 is the origin the API allows (on 4173 the session check is refused with 403). The dashboard is measured signed in, with a fresh demo guest per run (refresh tokens rotate), deleted afterwards and redacted from the saved reports. |
+| **Medians, and the range** | Blocking time on this laptop varied 340-1,300 ms on one build. |
+
+### Tried and reverted
+
+- Preloading the dashboard's chunks alongside the session refresh (LCP 3.7 →
+  4.0 s: the chunks evaluated on arrival and delayed the first render).
+- Starting the session refresh before React renders (no gain).
+- Retrying a failed lazy-page download: Chrome remembers a failed module
+  fetch (checked with a server that fails once), so the retry cannot succeed.
+
+### Known limitations
+
+- **The signed-in dashboard scores 64 on simulated mobile** (LCP 3.8 s; 97
+  on desktop). A hard reload of `/app` fetches in a chain (entry, session
+  refresh, shell, page, data); the demo reaches it by in-app navigation.
+- **A rare pre-existing e2e flake:** twice in ~150 test runs a lazy chunk
+  failed to download from `vite preview` in a two-browser test. Not
+  reproducible in 50 targeted loads; CI retries once.
+- **Cloudinary transforms have nothing to transform yet:** there is no avatar
+  upload in the UI.
+- **Lighthouse numbers are from this laptop;** the deployed site (Phase 12)
+  will be the reference.
+- **Best practices is 96 on the landing page:** an anonymous visitor's session
+  check answers 401, which Chrome logs as a console error.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint` | ✅ 0 errors, 0 warnings |
+| `npm run format:check` | ✅ (generated reports in `docs/quality/` excluded) |
+| `npm run typecheck` | ✅ clean in all 3 workspaces |
+| `npm run test:coverage -w @intellmeet/server` | ✅ **514 passed**, 94.79 / 85.58 / 94.87 / 94.79 % (gate 90 / 80 / 90 / 90) |
+| `npm run test:coverage -w @intellmeet/client` | ✅ **211 passed**, 78.93 / 82.39 / 74.21 / 78.93 % |
+| `npx playwright test` (production build) | ✅ **17 passed** in 3.9 min; whole suite twice more 33 / 34 (the flake above) |
+| axe, 24 page states × 2 themes | ✅ 0 violations |
+| Lighthouse, landing page, mobile (12 runs) | ✅ performance median **85** (71-91), accessibility 100, SEO 100, best practices 96; LCP 1.9-2.3 s |
+| Lighthouse, landing page, desktop | ✅ 98-100; LCP 0.5 s |
+| Lighthouse, dashboard signed in | ⚠️ mobile 63-65 (LCP 3.8 s); desktop 95-98 (LCP 1.0-1.1 s) |
+| Bundle, first load | 202.0 → **154.4 kB** gzipped |
+
+### Next phase
+
+**Phase 12 — Deployment:** unchanged from Phase 11's plan (Atlas, Upstash,
+Cloudinary, Gemini, Metered TURN, `render.yaml`, `client/vercel.json`, the
+production seed, a keep-alive ping, a production smoke test). Then re-run
+Lighthouse against the live site and record it beside these numbers.
+
+---
+
 ## Phase 11 — Docker, Kubernetes, Helm, CI/CD ✅
 
 **Completed:** 2026-09-24. Done before Phase 10 (quality pass), and followed
