@@ -18,6 +18,10 @@ import { joinFromLobby, signInAsDemo, signInAsTeammate, startMeeting } from './h
  * Then the Phase 7 checkpoint on the same meeting: the recording plays from
  * the transcript, the host corrects the summary and everyone sees it, and
  * both exports produce files that open.
+ *
+ * And so, end to end, the journey the plan's Phase 10 asks for: demo sign-in,
+ * create, join, chat, end, the summary (mock provider), and one of this
+ * meeting's own action items made a task and moved on the board.
  */
 
 test.describe('recording and AI summary', () => {
@@ -47,6 +51,12 @@ test.describe('recording and AI summary', () => {
     await guest.goto(`/app/room/${roomCode}`);
     await joinFromLobby(guest);
     await expect(host.getByText('2 in the room')).toBeVisible();
+
+    // --- A word in the chat before it starts ---------------------------------
+
+    await guest.getByRole('textbox', { name: 'Message' }).fill('Ready when you are');
+    await guest.getByRole('button', { name: 'Send message' }).click();
+    await expect(host.getByText('Ready when you are')).toBeVisible();
 
     // --- Recording is visible to everyone -----------------------------------
 
@@ -82,6 +92,10 @@ test.describe('recording and AI summary', () => {
     await expect(guest.getByRole('heading', { name: 'Key decisions' })).toBeVisible();
     // Ada is not the host, so she is told who can correct it instead.
     await expect(guest.getByText(/Only the host, .+, can correct/)).toBeVisible();
+
+    // The chat is part of the meeting's record.
+    await guest.getByRole('tab', { name: 'Chat' }).click();
+    await expect(guest.getByRole('tabpanel').getByText('Ready when you are')).toBeVisible();
 
     // The mock names real participants, and they were matched to accounts.
     await guest.getByRole('tab', { name: /Action items/ }).click();
@@ -151,5 +165,37 @@ test.describe('recording and AI summary', () => {
     const bytes = readFileSync(pdfPath);
     expect(bytes.subarray(0, 5).toString('latin1')).toBe('%PDF-');
     expect(bytes.subarray(-8).toString('latin1')).toContain('%%EOF');
+
+    // --- One of this meeting's action items becomes a task, and moves --------
+
+    await host.getByRole('tab', { name: /Action items/ }).click();
+    const create = host.getByRole('button', { name: /^Create a task for “/ }).first();
+    const item = /“(.+)”/.exec((await create.getAttribute('aria-label')) ?? '')?.[1];
+    if (!item) throw new Error('The summary has no action item to turn into a task');
+    await create.click();
+    await host
+      .getByRole('dialog', { name: 'Create a task' })
+      .getByRole('button', { name: 'Create task' })
+      .click();
+
+    await host.getByRole('link', { name: `Open the task for “${item}”, in To Do` }).click();
+    await host.waitForURL(/\/app\/tasks\?board=[a-f0-9]{24}&task=[a-f0-9]{24}/);
+    // By id, not title: the mock writes the same action items every time, so a
+    // retried run finds the first attempt's task (deleted only at teardown).
+    const taskId = new URL(host.url()).searchParams.get('task');
+    const task = host.getByRole('dialog', { name: item });
+    await expect(task.getByRole('link', { name: 'E2E recording test' })).toBeVisible();
+
+    const column = task.getByRole('combobox', { name: 'Column' });
+    await column.selectOption({ label: 'In Progress' });
+    await expect(column.locator('option:checked')).toHaveText('In Progress');
+    await host.keyboard.press('Escape');
+
+    await expect(
+      host
+        .getByRole('region', { name: 'In Progress', exact: true })
+        .locator(`[data-task-id="${taskId}"]`)
+        .getByRole('button', { name: item, exact: true }),
+    ).toBeVisible();
   });
 });

@@ -38,6 +38,14 @@ function socketUrl(): string {
   return configured;
 }
 
+/**
+ * Refused handshakes in a row, each after a successful refresh, before giving
+ * up. A token minted a moment ago being refused means the server rejects the
+ * account rather than the token, and reconnecting for ever would only hammer
+ * it.
+ */
+const MAX_REFUSED_HANDSHAKES = 3;
+
 export function connectSocket(): void {
   if (useSocketStore.getState().socket) return;
 
@@ -60,20 +68,43 @@ export function connectSocket(): void {
     reconnectionDelayMax: 5_000,
   });
 
-  socket.on('connect_error', (error: Error) => {
-    // The handshake middleware rejects with a plain Error, so the message is
-    // all we get. A rejected handshake is usually just an expired access
-    // token: refresh, and the manager's own backoff retries with the new one
-    // because `auth` is re-evaluated on each attempt.
-    void refreshSession().then((token) => {
-      if (!token) {
-        // The refresh cookie is gone too, so retrying forever would only
-        // hammer the server while the user sits on a dead page.
-        useSocketStore.getState().teardown();
-      }
-    });
+  let refusedInARow = 0;
+  socket.on('connect', () => {
+    refusedInARow = 0;
+  });
 
+  socket.on('connect_error', (error: Error) => {
     if (import.meta.env.DEV) console.warn('[socket] connect_error:', error.message);
+
+    // The server could not be reached: a dropped network, a restart, a cold
+    // start. The socket is still active and the manager retries on its own,
+    // with backoff. Refreshing here would be worse than useless: with the API
+    // down the refresh fails too, and a failed refresh ends the session, so a
+    // Wi-Fi blip in a meeting would sign the person out.
+    if (socket.active) return;
+
+    // The handshake middleware refused us, almost always because the access
+    // token expired while the socket was down (it lasts 15 minutes; a meeting
+    // can last longer). Socket.io does not retry a refusal by itself: refresh,
+    // then connect again, and `auth` above sends the new token.
+    refusedInARow += 1;
+    if (refusedInARow > MAX_REFUSED_HANDSHAKES) {
+      useSocketStore.getState().teardown();
+      return;
+    }
+
+    void refreshSession().then((token) => {
+      // Signed out or replaced while the refresh was in flight.
+      if (useSocketStore.getState().socket !== socket) return;
+
+      if (!token) {
+        // The refresh cookie is gone too, so there is nothing to retry with.
+        useSocketStore.getState().teardown();
+        return;
+      }
+
+      socket.connect();
+    });
   });
 
   useSocketStore.getState().setSocket(socket);

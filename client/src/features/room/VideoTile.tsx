@@ -100,7 +100,7 @@ export function VideoTile({
       {!hasVideo && (
         <div className="absolute inset-0 grid place-items-center">
           <Avatar className="size-16">
-            {avatarUrl && <AvatarImage src={avatarUrl} alt="" />}
+            {avatarUrl && <AvatarImage src={avatarUrl} size={64} alt="" />}
             <AvatarFallback className="text-lg">{initials(name)}</AvatarFallback>
           </Avatar>
         </div>

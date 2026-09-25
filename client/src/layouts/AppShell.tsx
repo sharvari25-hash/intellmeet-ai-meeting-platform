@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   BarChart3,
@@ -14,6 +14,7 @@ import { NotificationBell } from '@/features/notifications/NotificationBell';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
+import { useFocusOnNavigation } from '@/hooks/useFocusOnNavigation';
 import { useSocketLifecycle } from '@/hooks/useSocketLifecycle';
 import { cn } from '@/lib/utils';
 import { UserMenu } from './UserMenu';
@@ -87,12 +88,14 @@ function Wordmark() {
 export function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const location = useLocation();
+  const mainRef = useRef<HTMLElement>(null);
 
   // The socket belongs to the signed-in app, so it is opened here rather than
   // at the root - which also keeps socket.io-client out of the public bundle.
   useSocketLifecycle();
 
   useEffect(() => setMobileNavOpen(false), [location.pathname]);
+  useFocusOnNavigation(mainRef);
 
   return (
     <div className="min-h-dvh md:grid md:grid-cols-[15rem_1fr]">
@@ -143,7 +146,7 @@ export function AppShell() {
           </div>
         </header>
 
-        <main id="main" className="min-w-0 flex-1 px-4 py-6 sm:px-6">
+        <main ref={mainRef} id="main" className="min-w-0 flex-1 px-4 py-6 sm:px-6">
           {/* Each page is its own lazy chunk, so the boundary lives here
               rather than around the whole shell: a page transition swaps the
               content and leaves the nav, the bell and the header in place. */}

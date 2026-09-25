@@ -35,9 +35,16 @@ export default tseslint.config(
     },
   },
 
-  // Server + shared run on Node.
+  // Server + shared run on Node, and so do the client's build scripts.
   {
-    files: ['server/**/*.ts', 'shared/**/*.ts', '*.js', '*.ts', '.github/**/*.mjs'],
+    files: [
+      'server/**/*.ts',
+      'shared/**/*.ts',
+      '*.js',
+      '*.ts',
+      '.github/**/*.mjs',
+      'client/scripts/**/*.mjs',
+    ],
     languageOptions: {
       globals: { ...globals.node },
     },
@@ -45,8 +52,14 @@ export default tseslint.config(
   {
     // The server bootstrap, config loader and CLI scripts legitimately write
     // to stdout: env validation fails before the logger exists, and a seed
-    // script's output is meant for the operator reading the terminal.
-    files: ['server/src/server.ts', 'server/src/config/**/*.ts', 'server/src/scripts/**/*.ts'],
+    // script's output is meant for the operator reading the terminal (as is
+    // the bundle summary's).
+    files: [
+      'server/src/server.ts',
+      'server/src/config/**/*.ts',
+      'server/src/scripts/**/*.ts',
+      'client/scripts/**/*.mjs',
+    ],
     rules: { 'no-console': 'off' },
   },
 

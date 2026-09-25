@@ -5,9 +5,9 @@
 [![CI](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/ci.yml)
 [![Docker](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/docker.yml)
 
-**Status:** 🚧 In development — Phases 0-9 and 11 (Docker, Kubernetes, Helm,
-CI/CD) complete; deployment (Phase 12) is next, the quality pass (Phase 10)
-after it. Real WebRTC
+**Status:** 🚧 In development — Phases 0–11 complete (including the Phase 10
+quality pass: accessibility, performance, edge cases); deployment (Phase 12)
+is next. Real WebRTC
 meetings work end to end; a recorded meeting turns itself into a transcript,
 a summary, key decisions and owned action items; every past meeting is
 searchable, correctable by its host and exportable; action items become tasks
@@ -105,7 +105,8 @@ rewrites it to the Render service. The frontend never needs an API base URL.
 | `npm run lint:fix` | ESLint with autofix |
 | `npm run typecheck` | `tsc --noEmit` in every workspace |
 | `npm test` | Vitest suites in every workspace |
-| `npm run test:e2e` | Playwright: analytics (charts, tables, live update, safe CSV, 360 px), two guests on one board (create, drag, live move, comment + mention), action item → task, demo identity, history search + export, two browsers in one meeting, record → AI → edit → export (needs Docker + seed; cleans up after itself). `E2E_BASE_URL` / `E2E_API_URL` point it at other ports |
+| `npm run test:e2e` | Playwright: analytics (charts, tables, live update, safe CSV, 360 px), two guests on one board (create, drag, live move, comment + mention), action item → task, demo identity, history search + export, two browsers in one meeting, the full journey (demo → meeting → chat → record → end → AI summary → edit → export → task → move), two tabs and a host leaving, axe accessibility checks on every page in both themes, and a keyboard-only walkthrough (needs Docker + seed; cleans up after itself). `E2E_BASE_URL` / `E2E_API_URL` point it at other ports |
+| `npm run analyze -w @intellmeet/client` | Production build plus a bundle treemap and a size summary in `client/bundle-stats/` |
 | `npm run dev:https` | Dev over HTTPS on the LAN, for testing from a phone |
 | `npm run eval:ai -w @intellmeet/server` | Scores the AI provider on the sample transcripts in `server/fixtures/` |
 | `npm run worker -w @intellmeet/server` | Standalone AI worker (only with `RUN_WORKER_IN_PROCESS=false`) |
@@ -604,15 +605,15 @@ npm run prepare   # points git at .husky/
 - [`docs/architecture.md`](./docs/architecture.md) — how the pieces work, with diagrams
 - [`docs/devops.md`](./docs/devops.md) — Docker images, Compose, CI/CD
 - [`docs/kubernetes.md`](./docs/kubernetes.md) — manifests, Helm chart, validation, kind
+- [`docs/quality-report.md`](./docs/quality-report.md) — Phase 10: tests and coverage, accessibility audit, Lighthouse scores, bundle analysis, edge cases (reports in `docs/quality/`)
 
 ## Roadmap
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
 Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
 Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban ✅ · Phase 9 analytics ✅ ·
-Phase 11 Docker/K8s/CI ✅ · Phase 12 deploy · Phase 10 quality · Phase 13
-observability · Phase 14 docs & demo (Phase 11 was done before 10, so the
-live demo is online early).
+Phase 11 Docker/K8s/CI ✅ · Phase 10 quality ✅ · Phase 12 deploy · Phase 13
+observability · Phase 14 docs & demo (Phase 11 was done before 10).
 
 ## License
 

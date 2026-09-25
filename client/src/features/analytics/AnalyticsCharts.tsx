@@ -1,4 +1,3 @@
-import { useSyncExternalStore } from 'react';
 import {
   Bar,
   BarChart,
@@ -16,6 +15,7 @@ import {
   type TooltipContentProps,
 } from 'recharts';
 import type { AnalyticsMember, AnalyticsOverview, AnalyticsWeek } from '@intellmeet/shared';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { MEMBER_CHART_LIMIT, completionRows, outcomesOf, type Outcome } from './chartData';
 import { decimal, duration, percent, weekLabel, weekOf } from './format';
 
@@ -41,20 +41,6 @@ const TICK = { fill: 'var(--muted-foreground)', fontSize: 12 };
 const GRID = 'var(--border)';
 /** The card behind the chart: the colour of the gap between touching marks. */
 const SURFACE = 'var(--card)';
-
-function subscribeToMotion(callback: () => void): () => void {
-  const query = window.matchMedia('(prefers-reduced-motion: reduce)');
-  query.addEventListener('change', callback);
-  return () => query.removeEventListener('change', callback);
-}
-
-function useReducedMotion(): boolean {
-  return useSyncExternalStore(
-    subscribeToMotion,
-    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    () => false,
-  );
-}
 
 // --- Shared pieces -----------------------------------------------------------------
 
@@ -296,6 +282,12 @@ export function OutcomesChart({ items }: { items: AnalyticsOverview['actionItems
               stroke={SURFACE}
               strokeWidth={2}
               isAnimationActive={!reduced}
+              // Recharts makes a pie focusable by default, even with the
+              // accessibility layer off. The chart is hidden from assistive
+              // technology (its table says the same), and a Tab stop inside
+              // hidden content is a stop with nothing to announce (axe:
+              // aria-hidden-focus, Phase 10).
+              rootTabIndex={-1}
             >
               {outcomes.map((outcome) => (
                 <Cell key={outcome.key} fill={outcome.color} />

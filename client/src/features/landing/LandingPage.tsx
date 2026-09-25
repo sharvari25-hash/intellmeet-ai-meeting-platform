@@ -1,3 +1,4 @@
+import { Suspense, lazy, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowRight,
@@ -10,10 +11,49 @@ import {
   Video,
 } from 'lucide-react';
 import { Spinner } from '@/components/Spinner';
-import { ThemeToggle } from '@/components/ThemeToggle';
+import { ThemeToggleButton } from '@/components/ThemeToggleButton';
 import { Button } from '@/components/ui/button';
 import { FormError } from '@/features/auth/FormError';
 import { useDemoLogin } from '@/features/auth/useAuth';
+import { useThemeStore } from '@/stores/themeStore';
+
+const loadThemeMenu = () => import('@/components/ThemeToggle');
+const ThemeToggle = lazy(() => loadThemeMenu().then((module) => ({ default: module.ThemeToggle })));
+
+/**
+ * The theme menu, loaded when somebody reaches for it.
+ *
+ * It is a Radix dropdown, and that brings positioning (floating-ui), focus
+ * trapping and scroll locking with it - about a tenth of what the landing
+ * page would otherwise run before anyone can click. Loaded with the page, it
+ * cost Lighthouse points whichever way it was timed: before the first paint
+ * it delayed the paint, after it it blocked the main thread in the window
+ * Lighthouse measures. So the page shows the same button, a real and labelled
+ * one, and fetches the menu when the pointer or the keyboard focus reaches
+ * it; the press then swaps in the real menu, already open.
+ */
+function DeferredThemeToggle() {
+  const theme = useThemeStore((state) => state.theme);
+  const [wanted, setWanted] = useState(false);
+  const preload = () => void loadThemeMenu();
+
+  const button = (
+    <ThemeToggleButton
+      theme={theme}
+      onPointerEnter={preload}
+      onFocus={preload}
+      onClick={() => setWanted(true)}
+    />
+  );
+
+  if (!wanted) return button;
+
+  return (
+    <Suspense fallback={button}>
+      <ThemeToggle defaultOpen />
+    </Suspense>
+  );
+}
 
 /**
  * How the product is actually used, in four steps.
@@ -152,7 +192,7 @@ export function LandingPage() {
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-2 px-4 sm:px-6">
           <Wordmark />
           <nav aria-label="Account" className="ml-auto flex items-center gap-1 sm:gap-2">
-            <ThemeToggle />
+            <DeferredThemeToggle />
             <Button asChild variant="ghost" size="sm">
               <Link to="/login">Sign in</Link>
             </Button>

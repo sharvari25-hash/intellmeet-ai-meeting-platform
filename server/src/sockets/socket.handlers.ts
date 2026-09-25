@@ -36,7 +36,7 @@ import {
   updateParticipantMedia,
   type StoredParticipant,
 } from './presence.js';
-import { pruneDisconnected } from './rooms.js';
+import { pruneDisconnected, replaceSameDevice } from './rooms.js';
 import type { AppServer, AppSocket } from './socket.types.js';
 
 /**
@@ -122,7 +122,9 @@ function on<T>(
   });
 }
 
-const toParticipant = (stored: StoredParticipant): Participant => stored;
+/** A roster entry as the others see it: which browser it is stays here. */
+const toParticipant = ({ deviceId: _deviceId, ...participant }: StoredParticipant): Participant =>
+  participant;
 
 /** Which meetings this socket is currently in, so disconnect can clean up. */
 const socketRoomsJoined = new WeakMap<AppSocket, Set<string>>();
@@ -137,7 +139,13 @@ async function leaveRoom(io: AppServer, socket: AppSocket, meetingId: string): P
   const { user } = socket.data;
 
   await removeParticipant(meetingId, socket.id);
-  await recordParticipantLeave(meetingId, user.id);
+
+  // Attendance ends with the person's last entry: somebody who closes the
+  // laptop's tab but is still in on their phone has not left the meeting.
+  const roster = await getParticipants(meetingId);
+  if (!roster.some((participant) => participant.userId === user.id)) {
+    await recordParticipantLeave(meetingId, user.id);
+  }
 
   socket.leave(socketRooms.meeting(meetingId));
   socketRoomsJoined.get(socket)?.delete(meetingId);
@@ -166,7 +174,7 @@ export function registerHandlers(io: AppServer, socket: AppSocket): void {
 
   // --- Room lifecycle ------------------------------------------------------
 
-  on(socket, SOCKET_EVENTS.ROOM_JOIN, roomJoinSchema, async ({ meetingId }) => {
+  on(socket, SOCKET_EVENTS.ROOM_JOIN, roomJoinSchema, async ({ meetingId, deviceId }) => {
     // Authorisation is re-checked here, not inherited from the handshake: the
     // handshake only proves who you are, never which meetings you may enter.
     const meeting = await getMeetingForMember(meetingId, user.id);
@@ -183,7 +191,12 @@ export function registerHandlers(io: AppServer, socket: AppSocket): void {
       isHost: meeting.hostId.toString() === user.id,
       media: { audio: true, video: true, screen: false },
       joinedAt: new Date().toISOString(),
+      deviceId,
     };
+
+    // Another tab of this browser leaves before this one joins, so the
+    // roster below never offers the newcomer a connection to itself.
+    await replaceSameDevice(io, meetingId, participant);
 
     await socket.join(socketRooms.meeting(meetingId));
     await addParticipant(meetingId, participant);

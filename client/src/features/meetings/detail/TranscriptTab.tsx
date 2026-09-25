@@ -108,7 +108,14 @@ export function TranscriptTab({
           : `${segments.length} lines`}
       </p>
 
-      <ol className="mt-3 max-h-[32rem] space-y-1 overflow-y-auto pr-2 text-sm">
+      <ol
+        className="mt-3 max-h-[32rem] space-y-1 overflow-y-auto rounded-md pr-2 text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        // A list that scrolls must be reachable by keyboard. With a recording
+        // its "Play from" buttons are the way in; without one nothing inside
+        // it takes focus, so the list itself does (axe:
+        // scrollable-region-focusable, Phase 10).
+        {...(canPlay ? {} : { tabIndex: 0, 'aria-label': 'Transcript lines' })}
+      >
         {visible.map(({ segment, index }) => (
           <li
             key={`${index}-${segment.start}`}

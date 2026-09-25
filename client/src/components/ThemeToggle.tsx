@@ -1,5 +1,5 @@
 import { Check, Monitor, Moon, Sun } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { ThemeToggleButton } from '@/components/ThemeToggleButton';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,18 +20,19 @@ const OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
  * "System" is a real third option rather than a default, because a user whose
  * OS switches to dark at sunset expects the app to follow - and a two-state
  * toggle silently overrides that the first time it is pressed.
+ *
+ * `defaultOpen` is for the landing page, which shows the bare button until
+ * somebody presses it and only then loads this menu - already open, because
+ * the press that loaded it was the press that meant "open".
  */
-export function ThemeToggle() {
+export function ThemeToggle({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const theme = useThemeStore((state) => state.theme);
   const setTheme = useThemeStore((state) => state.setTheme);
 
   return (
-    <DropdownMenu>
+    <DropdownMenu defaultOpen={defaultOpen}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label={`Theme: ${theme}. Change theme`}>
-          <Sun aria-hidden="true" className="size-4 dark:hidden" />
-          <Moon aria-hidden="true" className="hidden size-4 dark:block" />
-        </Button>
+        <ThemeToggleButton theme={theme} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {OPTIONS.map(({ value, label, icon: Icon }) => (
