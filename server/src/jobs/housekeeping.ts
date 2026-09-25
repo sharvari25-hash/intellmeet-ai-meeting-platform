@@ -3,6 +3,7 @@ import { logger } from '../lib/logger.js';
 import { restoreDemoBoard } from '../modules/demo/demo.board.js';
 import { cleanupDemoData } from '../modules/demo/demo.cleanup.js';
 import { refreshDemoHistory } from '../modules/demo/demo.history.js';
+import { failLostAiRuns } from '../modules/ai/ai.recovery.js';
 import { endAbandonedMeetings } from '../modules/meetings/meeting.sweep.js';
 
 /**
@@ -25,6 +26,9 @@ import { endAbandonedMeetings } from '../modules/meetings/meeting.sweep.js';
  *   quiet for `DEMO_BOARD_RESET_IDLE_MIN` (a single indexed read otherwise),
  *   and, once a week, moves the seeded history forward so the analytics'
  *   "last eight weeks" stay full (also one indexed read the rest of the time).
+ *   It also fails AI runs whose queue job was lost when Redis restarted, so
+ *   the host gets a Retry button (one indexed read; Redis is only asked when
+ *   a run has been stuck for ten minutes).
  * - **Every `DEMO_CLEANUP_INTERVAL_MIN` (30), first after a minute:** the demo
  *   workspace cleanup, a handful of deletes that has no reason to run often.
  */
@@ -45,9 +49,9 @@ function guarded(name: string, job: () => Promise<unknown>): () => void {
 }
 
 /**
- * The frequent pass: live meetings everybody has left, and the demo board's
- * sample tasks once nobody has touched the board for a while. Exported so the
- * sweep can be run by hand or from a test.
+ * The frequent pass: live meetings everybody has left, the demo board's
+ * sample tasks once nobody has touched the board for a while, and AI runs
+ * whose job was lost. Exported so the sweep can be run by hand or from a test.
  */
 export async function runQuickSweep(): Promise<void> {
   // The demo jobs run in order: moving the history forward (once a week)
@@ -60,8 +64,8 @@ export async function runQuickSweep(): Promise<void> {
     }
   };
 
-  // Independent jobs: one failing must not stop the other.
-  const results = await Promise.allSettled([endAbandonedMeetings(), demo()]);
+  // Independent jobs: one failing must not stop the others.
+  const results = await Promise.allSettled([endAbandonedMeetings(), demo(), failLostAiRuns()]);
   for (const result of results) {
     if (result.status === 'rejected') {
       logger.error({ err: result.reason }, '[housekeeping] job failed');

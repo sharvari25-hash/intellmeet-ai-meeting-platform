@@ -28,6 +28,12 @@ interface ProcessMeetingData {
  */
 export interface MeetingQueue {
   enqueue(meetingId: string): Promise<void>;
+  /**
+   * Meetings the queue still holds a job for: waiting, delayed between
+   * attempts, or running. Rejects when the queue cannot be read, which callers
+   * must treat as "unknown", never as "empty".
+   */
+  pendingMeetingIds(): Promise<Set<string>>;
   close(): Promise<void>;
 }
 
@@ -39,8 +45,22 @@ export class MemoryQueue implements MeetingQueue {
     this.jobs.push(meetingId);
   }
 
+  async pendingMeetingIds(): Promise<Set<string>> {
+    return new Set(this.jobs);
+  }
+
   async close(): Promise<void> {}
 }
+
+/** Every state in which a job still has work ahead of it. */
+const PENDING_JOB_STATES = [
+  'active',
+  'waiting',
+  'delayed',
+  'prioritized',
+  'paused',
+  'waiting-children',
+] as const;
 
 let queue: MeetingQueue = new MemoryQueue();
 
@@ -100,6 +120,14 @@ class BullMeetingQueue implements MeetingQueue {
       { meetingId },
       { jobId: `${meetingId}-${Date.now()}` },
     );
+  }
+
+  async pendingMeetingIds(): Promise<Set<string>> {
+    // One Lua script reads every state, so the answer is a single atomic
+    // snapshot: a job moving from waiting to active (or active to delayed)
+    // while it is read cannot fall between two lists and look lost.
+    const jobs = await this.queue.getJobs([...PENDING_JOB_STATES], 0, -1);
+    return new Set(jobs.flatMap((job) => (job?.data?.meetingId ? [job.data.meetingId] : [])));
   }
 
   async close(): Promise<void> {
