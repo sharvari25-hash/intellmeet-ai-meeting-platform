@@ -224,7 +224,11 @@ describe('demo workspace cleanup', () => {
 
   it('sweeps everything but the seed when asked for an age of zero', async () => {
     const { demo, seededTeam } = await seedAccounts();
-    await createMeeting(seededTeam._id, demo._id, 'RIGHTNW', 0);
+    // A minute old: far inside any real TTL, so only an age of zero sweeps it.
+    // Not 0 - stamped from `Date.now()` just before the cutoff is, it lands on
+    // the cutoff itself whenever both reads share a millisecond, and `$lt`
+    // rightly leaves a meeting no older than the cutoff alone.
+    await createMeeting(seededTeam._id, demo._id, 'RIGHTNW', 1 / 60);
 
     // What `npm run demo:cleanup -- 0` does, right before a presentation.
     const result = await cleanupDemoData({ olderThanHours: 0 });
