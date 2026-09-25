@@ -51,6 +51,34 @@ export function signUploadParams(
   return cloudinary.utils.api_sign_request(params, apiSecret);
 }
 
+/**
+ * Deletes one uploaded asset (the Upload API's `destroy`, which unlike the
+ * Admin API has no hourly call limit) and invalidates its CDN copy, so the
+ * URL stops answering too. Resolves with Cloudinary's verdict: `ok`, or
+ * `not found` when there was nothing to delete. Credentials are passed per
+ * call, like the signing helper above.
+ */
+export async function destroyAsset(
+  config: CloudinaryConfig,
+  publicId: string,
+  resourceType: 'image' | 'video',
+): Promise<{ result: string }> {
+  // A variable rather than an inline literal: the SDK reads credentials and
+  // `timeout` from any call's options (lib/uploader.js), but its typings for
+  // `destroy` list only the first three keys.
+  const options = {
+    resource_type: resourceType,
+    type: 'upload' as const,
+    invalidate: true,
+    cloud_name: config.cloudName,
+    api_key: config.apiKey,
+    api_secret: config.apiSecret,
+    // Deleting a meeting waits for this; a slow Cloudinary must not hang it.
+    timeout: 10_000,
+  };
+  return (await cloudinary.uploader.destroy(publicId, options)) as { result: string };
+}
+
 /** Endpoint the browser POSTs the multipart form to. */
 export function buildUploadUrl(cloudName: string, resourceType: 'image' | 'video'): string {
   return `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`;

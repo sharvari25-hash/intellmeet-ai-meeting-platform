@@ -121,9 +121,13 @@ async function loadAudio(meeting: MeetingDocument): Promise<{ data: Buffer; mime
     }
   }
 
-  // Cloudinary. The URL was checked against our own cloud when it was saved
-  // (recording.service.ts), so this can only ever fetch our own asset.
-  const response = await fetch(recording.url, { signal: AbortSignal.timeout(120_000) });
+  // Cloudinary. The URL was checked when it was saved (ownRecordingUrl in
+  // recording.service.ts): the plain delivery URL of our own upload. Redirects
+  // are refused, so the check also holds for where the bytes come from.
+  const response = await fetch(recording.url, {
+    redirect: 'error',
+    signal: AbortSignal.timeout(120_000),
+  });
   if (response.status === 404) {
     throw new PermanentJobError('The recording is no longer available on Cloudinary.');
   }

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, inject } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, inject, vi } from 'vitest';
 
 /**
  * Runs before every test file, and crucially before the module under test is
@@ -40,6 +40,17 @@ const fakeRedis = createFakeRedis();
 beforeAll(async () => {
   await connectMongo({ uri: process.env.MONGODB_URI as string, retries: 1 });
   setRedisClient(fakeRedis);
+});
+
+/**
+ * No test may reach Cloudinary. Deleting a meeting with a Cloudinary
+ * recording asks it to destroy the asset, and the suite runs with fake
+ * credentials. Stubbed before every test, so a file that restores its own
+ * mocks cannot undo it; tests that care inspect or override the spy.
+ */
+const { v2: cloudinary } = await import('cloudinary');
+beforeEach(() => {
+  vi.spyOn(cloudinary.uploader, 'destroy').mockResolvedValue({ result: 'ok' });
 });
 
 afterEach(async () => {
