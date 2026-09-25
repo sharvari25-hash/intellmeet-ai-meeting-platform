@@ -57,10 +57,10 @@
   },
   "client": {
     "total": {
-      "statements": 78.98,
-      "branches": 82.25,
-      "functions": 74.25,
-      "lines": 78.98
+      "statements": 79.04,
+      "branches": 82.34,
+      "functions": 74.33,
+      "lines": 79.04
     },
     "gate": "reported, not gated"
   }

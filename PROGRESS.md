@@ -91,6 +91,19 @@ the download takes about a second. `DropdownMenuContent` now ignores presses
 on its own button, as Radix's non-modal dialog does. A unit test holds the
 menu mid-fade and presses again (`dropdown-menu.test.tsx`).
 
+**Focus was lost after "Back to the dashboard".** The next CI run failed the
+keyboard walkthrough (test and retry): Tab could not reach Tasks in 60
+presses. The button goes with the page it is on, so focus fell to `<body>`,
+and Tab carried on from inside `<main>` to the end of the page. There sonner
+keeps it: when focus leaves the toasts it goes back to where it came from,
+and "Ending the meeting for everyone" was still up. Whether the spec went
+that way depended on whether the dashboard had rendered yet: with CI's
+settings here, 2 of 3 runs failed at least once. The app shell now focuses the
+new page's heading when a navigation leaves focus nowhere
+(`useFocusOnNavigation`), so the walkthrough goes back to the sidebar with
+Shift+Tab, as a person would. Sonner is left alone: in a browser, Tab past
+the last toast reaches the browser's own controls.
+
 ### Decisions & trade-offs
 
 | Decision | Why |
@@ -135,9 +148,10 @@ menu mid-fade and presses again (`dropdown-menu.test.tsx`).
 | `npm run format:check` | ✅ (generated reports in `docs/quality/` excluded) |
 | `npm run typecheck` | ✅ clean in all 3 workspaces |
 | `npm run test:coverage -w @intellmeet/server` | ✅ **514 passed**, 94.79 / 85.58 / 94.87 / 94.79 % (gate 90 / 80 / 90 / 90) |
-| `npm run test:coverage -w @intellmeet/client` | ✅ **214 passed**, 78.98 / 82.25 / 74.25 / 78.98 % |
+| `npm run test:coverage -w @intellmeet/client` | ✅ **218 passed**, 79.04 / 82.34 / 74.33 / 79.04 % |
 | `npx playwright test` (production build) | ✅ **17 passed** in 3.9 min; whole suite twice more 33 / 34 (the flake above) |
 | After the menu fix (CI, above) | ✅ journey 3 / 3; whole suite **17 passed** in 2.9 min |
+| After the focus fix, CI's settings (headless shell, `CI=1`) | ✅ keyboard 3 / 3, journey 3 / 3; whole suite **17 passed** in 3.2 min |
 | axe, 24 page states × 2 themes | ✅ 0 violations |
 | Lighthouse, landing page, mobile (12 runs) | ✅ performance median **85** (71-91), accessibility 100, SEO 100, best practices 96; LCP 1.9-2.3 s |
 | Lighthouse, landing page, desktop | ✅ 98-100; LCP 0.5 s |

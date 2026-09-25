@@ -32,7 +32,7 @@ live Vercel/Render deployment, which does not exist yet (Phase 12).
 | Suite | Tests | Coverage (statements / branches / functions / lines) |
 | --- | --- | --- |
 | Server (Vitest, Supertest, real Socket.io, in-memory MongoDB) | **514** passed | **94.79 / 85.58 / 94.87 / 94.79 %** (gate 90 / 80 / 90 / 90) |
-| Client (Vitest, Testing Library) | **214** passed | **78.98 / 82.25 / 74.25 / 78.98 %** (reported, not gated) |
+| Client (Vitest, Testing Library) | **218** passed | **79.04 / 82.34 / 74.33 / 79.04 %** (reported, not gated) |
 | End to end (Playwright, production build) | **17** passed | - |
 
 Critical server modules (statements / branches / functions / lines):
@@ -57,6 +57,7 @@ room edge cases (2). Stability, all on the production build:
 | New specs, three times each | accessibility + keyboard 21 / 21; edge cases + journey 8 / 9 |
 | Whole suite twice in a row | 33 / 34 |
 | After the menu fix below: the journey three times, then the whole suite | 3 / 3, 17 / 17 |
+| After the focus fix below, with CI's headless shell: keyboard ×3, journey ×3, whole suite | 3 / 3, 3 / 3, 17 / 17 |
 
 The two failures are the same pre-existing flake (see "Known limitations"):
 a lazy page's chunk failed to download from `vite preview` in a two-browser
@@ -73,6 +74,17 @@ why it never failed here. Once the menus stopped being modal, nothing held
 the test back until the fade had ended. Menus now leave presses on their own
 button to the button (`components/ui/dropdown-menu.tsx`), with a unit test
 that presses mid-fade.
+
+**The next run failed the keyboard walkthrough,** also the app's fault:
+"Back to the dashboard" left focus nowhere. The button goes with its page,
+focus fell to `<body>`, and the next Tab carried on from inside the new page
+to the toasts at the end, where sonner sends focus back to where it came
+from, so it never wrapped round to the sidebar. It failed only when the
+dashboard had rendered before the spec looked at focus, which is why it
+passed before. The app shell now puts focus on the new page's heading
+whenever a navigation leaves it nowhere (`hooks/useFocusOnNavigation.ts`,
+with unit tests); a screen reader announces the page, and the next Tab
+starts from it.
 
 ## 2. Accessibility
 
