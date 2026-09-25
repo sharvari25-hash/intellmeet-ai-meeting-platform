@@ -7,5 +7,8 @@ playwright-report
 test-results
 package-lock.json
 *.md
+# Generated reports (Lighthouse, the bundle treemap), kept exactly as produced.
+docs/quality
+bundle-stats
 # Go templates, not YAML: Prettier cannot parse them (helm lint checks them).
 helm/*/templates

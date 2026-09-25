@@ -10,6 +10,8 @@ build/
 out/
 .vite/
 *.tsbuildinfo
+# `npm run analyze -w @intellmeet/client`; the checkpoint copy lives in docs/quality/
+bundle-stats/
 
 # ---- Environment / secrets (NEVER commit) ----
 .env

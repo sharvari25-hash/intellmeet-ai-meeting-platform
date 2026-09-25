@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 /**
  * Optional HTTPS dev mode, for testing the meeting room from a phone.
@@ -18,9 +19,30 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
  */
 const useHttps = process.env.VITE_HTTPS === 'true';
 
+/**
+ * Bundle analysis, on request (`npm run analyze -w @intellmeet/client`).
+ *
+ * A treemap to look at and the raw numbers behind it, with gzip and brotli
+ * sizes, written next to the build rather than into `dist/`, which is what
+ * gets deployed. Off for every other build: it adds seconds and nothing ships.
+ */
+const analyze = process.env.ANALYZE === 'true';
+const bundleReports = analyze
+  ? [
+      visualizer({
+        filename: 'bundle-stats/treemap.html',
+        template: 'treemap',
+        title: 'IntellMeet client bundle',
+        gzipSize: true,
+        brotliSize: true,
+      }),
+      visualizer({ filename: 'bundle-stats/stats.json', template: 'raw-data', gzipSize: true }),
+    ]
+  : [];
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss(), ...(useHttps ? [basicSsl()] : [])],
+  plugins: [react(), tailwindcss(), ...(useHttps ? [basicSsl()] : []), ...bundleReports],
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
