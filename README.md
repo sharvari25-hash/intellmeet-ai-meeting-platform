@@ -2,19 +2,25 @@
 
 > AI-powered enterprise meeting and collaboration platform — real-time video meetings that turn themselves into transcripts, summaries, decisions and tracked tasks.
 
+**Live demo: <https://intellmeet-ai-meeting-platform-clie.vercel.app>** —
+press **Try Live Demo**, no sign-up. Open it in a second browser (or on your
+phone) to be a second person in the same team and meet yourself in a call.
+
 [![CI](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/ci.yml)
 [![Docker](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/sharvari25-hash/intellmeet-ai-meeting-platform/actions/workflows/docker.yml)
 
-**Status:** 🚧 In development — Phases 0–11 complete (including the Phase 10
-quality pass: accessibility, performance, edge cases); deployment (Phase 12)
-is next. Real WebRTC
-meetings work end to end; a recorded meeting turns itself into a transcript,
+**Status:** ✅ Live — Phases 0–12 complete: deployed on Vercel and Render
+(Phase 12), after the Phase 10 quality pass (accessibility, performance, edge
+cases). Observability, load and security testing (Phase 13) is next. Real
+WebRTC meetings work end to end, with a TURN relay for restrictive networks;
+a recorded meeting turns itself into a transcript,
 a summary, key decisions and owned action items; every past meeting is
 searchable, correctable by its host and exportable; action items become tasks
 on a Kanban board that two browsers edit together live; and an analytics
 dashboard charts the team's meetings, attendance and follow-through, with CSV
-export. Everything runs with no third-party accounts (`AI_PROVIDER=mock`,
-local recording storage).
+export. Production uses Gemini, Cloudinary and Metered; locally, everything
+runs with no third-party accounts (`AI_PROVIDER=mock`, local recording
+storage).
 
 ---
 
@@ -38,7 +44,7 @@ local recording storage).
 | Charts | Recharts (its own lazy chunk; every chart also a table) |
 | Backend | Node.js 22 LTS, Express 5, TypeScript, helmet, pino |
 | Database | MongoDB Atlas + Mongoose |
-| Cache / jobs | Redis (ioredis) + BullMQ (post-meeting AI job, worker in-process) |
+| Cache / jobs | Redis (ioredis; Render Key Value in production) + BullMQ (post-meeting AI job, worker in-process) |
 | Real-time | Socket.io (+ Redis adapter); WebRTC mesh (perfect negotiation) |
 | AI | Google Gemini (3.5 Flash, falling back through 3.6-3.8 Flash) for transcription and analysis; Groq (Whisper + Llama 3.3) supported; deterministic Mock provider |
 | Testing | Vitest, Supertest, React Testing Library, Playwright |
@@ -46,7 +52,7 @@ local recording storage).
 | Containers | Multi-stage Docker images (Node 22 Alpine API, unprivileged nginx client), `docker-compose.prod.yml` |
 | Kubernetes | Kustomize manifests + a Helm chart (HPA, sticky Ingress, restricted Pod Security) |
 | CI/CD | GitHub Actions: lint, typecheck, tests with coverage, build and Playwright on every PR; images to GHCR on `main` |
-| Deploy | Vercel (client) + Render (server) — **no AWS** |
+| Deploy | Vercel (client) + Render (API and Key Value), MongoDB Atlas, Cloudinary, Metered TURN, all on free tiers — **no AWS** |
 
 ## Prerequisites
 
@@ -123,8 +129,8 @@ Coverage: `npm run test:coverage -w @intellmeet/server` (or `-w
 | --- | --- | --- | --- |
 | GET | `/api/health` | – | Liveness + per-dependency status |
 | GET | `/api/health/ready` | – | Readiness (503 when a dependency is down) |
-| POST | `/api/auth/register` | – | Create an account |
-| POST | `/api/auth/login` | – | Sign in (5 failed attempts / 15 min per IP+email) |
+| POST | `/api/auth/register` | – | Create an account (shares sign-in's 30 / 15 min per IP, 60 in production) |
+| POST | `/api/auth/login` | – | Sign in (per 15 min: 30 attempts per IP, 60 in production; failed ones 5 per IP+email, 10 in production, and 30 per account from any address) |
 | POST | `/api/auth/demo` | – | "Try Live Demo": create a guest in the demo team and sign in as it |
 | DELETE | `/api/auth/demo` | Bearer | End a guest's demo session: delete the guest and what it made (guests only) |
 | POST | `/api/auth/refresh` | cookie | Rotate the refresh token |
@@ -143,7 +149,7 @@ Coverage: `npm run test:coverage -w @intellmeet/server` (or `-w
 | POST | `/api/meetings` | Bearer | Create a meeting (schedule, or start now) |
 | GET | `/api/meetings` | Bearer | Meeting history: `status`, `teamId`, `page`; `q` searches titles, summaries and transcripts and says where each matched |
 | GET | `/api/meetings/:id` | Bearer | Get a meeting |
-| GET | `/api/meetings/code/:roomCode` | Bearer | Resolve a room code (join by link) |
+| GET | `/api/meetings/code/:roomCode` | Bearer | Resolve a room code (join by link): 403 not in the team, 404 no such code, 409 ended |
 | PATCH | `/api/meetings/:id` | Bearer | Edit a meeting (host) |
 | POST | `/api/meetings/:id/start` | Bearer | Start a scheduled meeting (host) |
 | POST | `/api/meetings/:id/end` | Bearer | End a meeting (host) |
@@ -250,6 +256,29 @@ after startup, then every 5 minutes), dated to when its room emptied. After a
 restart the room page rejoins by itself, so a call that is still going is
 never mistaken for an abandoned one.
 
+**Who can join a meeting.** A meeting belongs to a team, and only that team's
+members can open its room. The room link and the 7-character room code are a
+way in for people who already have access, not a pass. The room's **Invite**
+button shows the link, the code, and who can use them:
+
+- **A demo meeting** (in IntellMeet Demo Team): everyone who presses **Try
+  Live Demo** is put in that team, so send the link and ask them to choose Try
+  Live Demo. A signed-out link goes to the sign-in page, and Try Live Demo
+  there or on the landing page lands them in the room. Somebody who **signed
+  up** has their own account outside the demo team and is turned away; they
+  sign out and use Try Live Demo instead. Guests are plain members and cannot
+  create team invites.
+- **A meeting in your own team:** create the team (**Teams**), then **Create
+  invite link** on its page (admins only) and send that first. A team invite
+  is an 8-character code (`/join/<code>`). Once they are in the team, the
+  meeting link or room code lets them in.
+- **Join with a code** on the dashboard takes a room code, a whole meeting
+  link or a team invite code, and sends each to the right place.
+
+When a room link does not open, the page says which of three things went
+wrong: not in the team (403), no meeting has that code (404), or the meeting
+has ended (409). `docs/deployment.md` → Troubleshooting covers each.
+
 **Testing it from a phone.** Browsers only allow camera and microphone access
 in a secure context — HTTPS, or localhost. A phone opening
 `http://192.168.x.x:5173` has no camera API at all:
@@ -265,16 +294,19 @@ importantly, because it keeps the phone on the **same LAN**, where STUN alone
 is enough. A tunnel would put the phone behind carrier-style NAT and make TURN
 a prerequisite. `PROGRESS.md` has the step-by-step script.
 
-**STUN only, for now.** `GET /api/rtc/ice-servers` reports `hasTurn: false` and
-the room shows a banner saying so. Two machines on the same WiFi, or two home
-broadband connections, connect fine — roughly 80–90% of real cases. A corporate
-or university network that blocks UDP, or somebody joining on mobile data
-behind carrier-grade NAT, will **not** connect without a relay. Add TURN before
-demonstrating on a network you do not control:
+**A TURN relay for the networks that need one.** Two machines on the same
+WiFi, or two home broadband connections, connect directly with STUN alone —
+roughly 80–90% of real cases. A corporate or university network that blocks
+UDP, or somebody on mobile data behind carrier-grade NAT, needs a relay.
+**Production has one: Metered's TURN**, on UDP and TCP port 80, UDP 443, and
+TLS on 443 (which gets through firewalls that only let HTTPS out).
+`GET /api/rtc/ice-servers` hands the credential to signed-in users per call;
+it is never in the bundle. Locally there is no relay unless you add one, and
+the room shows a "Running on STUN only" notice; to add Metered's:
 
 ```bash
-TURN_URLS=turn:standard.relay.metered.ca:80,turns:standard.relay.metered.ca:443
-TURN_USERNAME=…
+TURN_URLS=turn:global.relay.metered.ca:80,turn:global.relay.metered.ca:80?transport=tcp,turn:global.relay.metered.ca:443,turns:global.relay.metered.ca:443?transport=tcp
+TURN_USERNAME=…               # Metered dashboard → TURN Server → Credentials
 TURN_CREDENTIAL=…
 ```
 
@@ -473,9 +505,16 @@ guest; the samples are never deleted.
 **Rate limits sized for a room.** Judges on one college or office network
 share an IP. Refreshing a session (every page load) and "Try Live Demo" have
 their own per-IP budgets (`RATE_LIMIT_REFRESH_PER_15_MIN`, 600;
-`RATE_LIMIT_DEMO_PER_15_MIN`, 60), register and sign-in keep 30, and only
-*failed* sign-ins count against an account. `docs/architecture.md` has the
-per-session request count behind these numbers.
+`RATE_LIMIT_DEMO_PER_15_MIN`, 60). Register and password sign-in share
+`RATE_LIMIT_AUTH_PER_15_MIN` (30, **60 in production**, since every judge
+signs in as a seeded team-mate for a second window), and only *failed*
+sign-ins count against an account: `RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN`
+per IP and email (5, **10 in production**), and 30 per account from any
+address, which holds even against someone who can choose the address the
+API sees. In production "IP" is the visitor's own address, read past
+Vercel's and Render's proxies (`server/src/lib/clientIp.ts`).
+`docs/architecture.md` has the per-session request count behind these
+numbers.
 
 To clear everything but the seed immediately before a demo (this also removes
 any guest still signed in, and puts the sample tasks back):
@@ -483,6 +522,9 @@ any guest still signed in, and puts the sample tasks back):
 ```bash
 npm run demo:cleanup -w @intellmeet/server -- 0
 ```
+
+Against production, run it as the production seed was run
+(`docs/deployment.md`, "Before a demo").
 
 **Auth model.** The access token is a 15-minute JWT returned in the response
 body and held in memory by the client. It is sent as `Authorization: Bearer …`
@@ -527,11 +569,44 @@ Every non-2xx response has the same body, so the client needs one error path:
 it rather than on the message. `requestId` matches the `X-Request-Id` response
 header and the server logs for that request.
 
+## Deployment
+
+**Live at <https://intellmeet-ai-meeting-platform-clie.vercel.app>**, all on
+free tiers, in Singapore where a region can be chosen:
+
+| Piece | Service |
+| --- | --- |
+| Web client | **Vercel** (Root Directory `client`, `client/vercel.json`: `/api/*` rewritten to Render, SPA fallback, security headers) |
+| API, Socket.io, AI worker | **Render** web service `intellmeet-api`, built from `server/Dockerfile` by the Blueprint in `render.yaml` |
+| Redis | **Render Key Value** `intellmeet-redis`, private network only |
+| Database | **MongoDB Atlas** M0 (AWS `ap-southeast-1`) |
+| Recordings | **Cloudinary** (signed uploads straight from the host's browser) |
+| AI | **Google Gemini** (3.5 Flash, falling back through 3.6-3.8 Flash) |
+| TURN relay | **Metered** |
+| Keep-alive | **cron-job.org**, `GET /api/health` every 10 minutes |
+
+A merge to `main` deploys both: Vercel at once, Render once every GitHub check
+on the commit has passed (`autoDeployTrigger: checksPass`), and only when the
+commit changes what goes into the API image. The Blueprint follows `main`.
+Secrets are entered in Render's dashboard only; `render.yaml` holds none.
+
+**[`docs/deployment.md`](./docs/deployment.md)** has the rest: every
+environment variable and where it lives, the setup as it was done,
+redeploying, rolling back, rotating each key, the keep-alive, free-tier
+limits, troubleshooting, and a pre-demo checklist.
+
+**Verified live:** joining by link and room code, chat, a phone on Wi-Fi,
+the shared board updating in two browsers, analytics and CSV export.
+**Two checks are open** (`PROGRESS.md`, Phase 12, "Pending"): Cloudinary
+refuses the recording upload on production (HTTP 401, a credentials check
+is next), so recording and the AI summary are not yet verified live; and a
+phone on mobile data, the case the TURN relay is for, has not been tested.
+
 ## Containers, Kubernetes and CI/CD
 
 **Production is Vercel (client) + Render (API, built from
-`server/Dockerfile`).** The same images also run as a whole stack under Docker
-Compose, and on Kubernetes as the scalable path.
+`server/Dockerfile`)** (see Deployment above). The same images also run as a
+whole stack under Docker Compose, and on Kubernetes as the scalable path.
 
 | What | How |
 | --- | --- |
@@ -557,7 +632,8 @@ running on kind).
 ├── k8s/                    Kubernetes manifests: base + local (kind) overlay
 ├── helm/intellmeet/        Helm chart
 ├── .github/workflows/      CI and image builds
-├── docs/                   architecture, DevOps, Kubernetes, API and report notes
+├── docs/                   architecture, deployment, DevOps, Kubernetes, quality report
+├── render.yaml             Render Blueprint: the API and its Key Value (Redis)
 ├── docker-compose.yml      local MongoDB + Redis (development)
 └── docker-compose.prod.yml the whole stack from the production images
 ```
@@ -575,12 +651,18 @@ Nothing secret is committed. Each workspace ships a documented
 ### Demo-day tuning (set these on Render if needed)
 
 Every one of these has a sensible default and is documented in
-`server/.env.example`; none needs setting for a normal deployment.
+`server/.env.example`. Production sets only the two sign-in limits, in
+`render.yaml`. Change them there rather than in Render's dashboard: the
+Blueprint reapplies the file's values on every sync. Any variable not in the
+file can be added in the dashboard (**Environment**, then **Save and
+deploy**).
 
 | Variable | Default | What it controls |
 | --- | --- | --- |
 | `RATE_LIMIT_DEMO_PER_15_MIN` | 60 | "Try Live Demo" sign-ins per IP per 15 minutes (a room of judges shares one IP; each makes 1–2) |
 | `RATE_LIMIT_REFRESH_PER_15_MIN` | 600 | Session refreshes per IP per 15 minutes (one per page load, one per open tab every 15 minutes) |
+| `RATE_LIMIT_AUTH_PER_15_MIN` | 30 (**60** on Render) | Register and password sign-in per IP per 15 minutes, successful or not (each hashes a password) |
+| `RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN` | 5 (**10** on Render) | Failed sign-ins per IP and email per 15 minutes. Separately, 30 failures per account from any address lock that account for 15 minutes; that one is fixed |
 | `DEMO_MAX_GUESTS` | 200 | Guest accounts that may exist at once; beyond it demo sign-in answers 503 until the sweep makes room |
 | `DEMO_DATA_TTL_HOURS` | 6 | Idle guests, and demo content older than this, are swept |
 | `DEMO_CLEANUP_INTERVAL_MIN` | 30 | How often that sweep runs |
@@ -603,16 +685,17 @@ npm run prepare   # points git at .husky/
 
 - [`PROGRESS.md`](./PROGRESS.md) — running build log: what was done, decisions, limitations
 - [`docs/architecture.md`](./docs/architecture.md) — how the pieces work, with diagrams
-- [`docs/devops.md`](./docs/devops.md) — Docker images, Compose, CI/CD
+- [`docs/deployment.md`](./docs/deployment.md) — the live deployment: services, environment variables, redeploy, rollback, key rotation, limits, troubleshooting
+- [`docs/devops.md`](./docs/devops.md) — Docker images, Compose, CI/CD, `render.yaml` and `vercel.json`
 - [`docs/kubernetes.md`](./docs/kubernetes.md) — manifests, Helm chart, validation, kind
-- [`docs/quality-report.md`](./docs/quality-report.md) — Phase 10: tests and coverage, accessibility audit, Lighthouse scores, bundle analysis, edge cases (reports in `docs/quality/`)
+- [`docs/quality-report.md`](./docs/quality-report.md) — tests and coverage, accessibility audit, Lighthouse scores (local and live), bundle analysis, edge cases (reports in `docs/quality/`)
 
 ## Roadmap
 
 Phase 0 scaffold ✅ · Phase 1 backend foundation ✅ · Phase 2 auth/teams ✅ ·
 Phase 3 meetings + Socket.io ✅ · Phase 4 frontend foundation ✅ · Phase 5 meeting room ✅ ·
 Phase 6 recording + AI ✅ · Phase 7 history ✅ · Phase 8 Kanban ✅ · Phase 9 analytics ✅ ·
-Phase 11 Docker/K8s/CI ✅ · Phase 10 quality ✅ · Phase 12 deploy · Phase 13
+Phase 11 Docker/K8s/CI ✅ · Phase 10 quality ✅ · Phase 12 deploy ✅ · Phase 13
 observability · Phase 14 docs & demo (Phase 11 was done before 10).
 
 ## License

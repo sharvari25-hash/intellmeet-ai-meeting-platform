@@ -1,15 +1,16 @@
 {
-  "generated": "2026-09-25T18:08:41.104Z",
+  "generated": "2026-09-26T13:40:00.000Z",
   "commands": {
     "server": "npm run test:coverage -w @intellmeet/server",
     "client": "npm run test:coverage -w @intellmeet/client"
   },
   "server": {
+    "tests": 555,
     "total": {
-      "statements": 94.79,
-      "branches": 85.58,
-      "functions": 94.87,
-      "lines": 94.79
+      "statements": 94.81,
+      "branches": 86.25,
+      "functions": 94.83,
+      "lines": 94.81
     },
     "gate": {
       "statements": 90,
@@ -27,17 +28,17 @@
       },
       "meetings": {
         "files": 7,
-        "statements": 98.2,
-        "branches": 85.4,
+        "statements": 98.3,
+        "branches": 85.7,
         "functions": 100,
-        "lines": 98.2
+        "lines": 98.3
       },
       "AI pipeline (modules/ai, lib/ai, jobs)": {
-        "files": 18,
-        "statements": 89.3,
-        "branches": 85.7,
-        "functions": 88.4,
-        "lines": 89.3
+        "files": 19,
+        "statements": 89.4,
+        "branches": 86.2,
+        "functions": 87.8,
+        "lines": 89.4
       },
       "tasks": {
         "files": 12,
@@ -52,15 +53,23 @@
         "branches": 81.1,
         "functions": 90.6,
         "lines": 86.6
+      },
+      "recordings": {
+        "files": 4,
+        "statements": 95.7,
+        "branches": 83.8,
+        "functions": 100,
+        "lines": 95.7
       }
     }
   },
   "client": {
+    "tests": 250,
     "total": {
-      "statements": 79.04,
-      "branches": 82.34,
-      "functions": 74.33,
-      "lines": 79.04
+      "statements": 82.76,
+      "branches": 83.14,
+      "functions": 74.5,
+      "lines": 82.76
     },
     "gate": "reported, not gated"
   }
