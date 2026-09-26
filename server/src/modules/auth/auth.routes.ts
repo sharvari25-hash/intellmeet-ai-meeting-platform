@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { loginSchema, registerSchema } from '@intellmeet/shared';
 import {
+  accountLoginLimiter,
   authLimiter,
   demoLimiter,
   loginLimiter,
@@ -25,12 +26,14 @@ export const authRouter: Router = Router();
 
 authRouter.post('/register', authLimiter, validate({ body: registerSchema }), controller.register);
 
-// Both limiters: the per-IP+email one stops credential stuffing against a
-// single account, the per-IP one caps total attempts from one source.
+// Three limiters: the per-IP one caps total attempts from one source, the
+// per-IP+email one stops credential stuffing against a single account, and
+// the per-account one holds even for a caller who can choose its address.
 authRouter.post(
   '/login',
   authLimiter,
   loginLimiter,
+  accountLoginLimiter,
   validate({ body: loginSchema }),
   controller.login,
 );
