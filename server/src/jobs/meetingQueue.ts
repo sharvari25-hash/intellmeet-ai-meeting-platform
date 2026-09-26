@@ -102,7 +102,7 @@ class BullMeetingQueue implements MeetingQueue {
         // 10s, 20s, 40s... - long enough for a per-minute rate limit to reset.
         backoff: { type: 'exponential', delay: env.AI_JOB_BACKOFF_MS },
         // Keep a little history for debugging without growing Redis forever -
-        // Upstash's free tier is 256 MB.
+        // Render Key Value's free plan is 25 MB, with `noeviction`.
         removeOnComplete: 100,
         removeOnFail: 200,
       },

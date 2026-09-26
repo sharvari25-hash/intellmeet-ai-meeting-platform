@@ -196,10 +196,10 @@ export const accountLoginLimiter = createLimiter({
 /**
  * Register and sign-in, per IP (`RATE_LIMIT_AUTH_PER_15_MIN`, default 30).
  *
- * Both hash a password (bcrypt: ~350ms of CPU at cost 12, far longer on a
- * small shared CPU), and register creates an account, so this is the tight
- * one. Every request counts, successful or not: the cost being bounded is the
- * hashing itself. Adjustable because reviewers on one network each sign in as
+ * Both hash a password (bcrypt: ~350ms of CPU at cost 12 on a laptop, 5-7 s
+ * on Render's 0.1 CPU, which is why production uses cost 10), and register
+ * creates an account, so this is the tight one. Every request counts,
+ * successful or not: the cost being bounded is the hashing itself. Adjustable because reviewers on one network each sign in as
  * a seeded team-mate for the second window of a call.
  */
 export const authLimiter = createLimiter({

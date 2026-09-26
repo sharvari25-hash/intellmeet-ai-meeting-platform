@@ -11,8 +11,9 @@ import { env } from '../config/env.js';
  * 2-3x slower per hash, which is irrelevant at login rates and, if anything,
  * slightly raises the attacker's cost too.
  *
- * The work factor comes from `BCRYPT_COST` (12 in production, lowered under
- * test) so the suite is not spending minutes on deliberately slow hashing.
+ * The work factor comes from `BCRYPT_COST` (12 by default, 10 on Render's
+ * 0.1 CPU, lowered under test) so the suite is not spending minutes on
+ * deliberately slow hashing.
  */
 export function hashPassword(plain: string): Promise<string> {
   return bcrypt.hash(plain, env.BCRYPT_COST);

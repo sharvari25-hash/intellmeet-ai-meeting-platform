@@ -118,9 +118,10 @@ const envSchema = z.object({
    */
   MAX_SESSIONS_PER_USER: z.coerce.number().int().min(1).max(200).default(20),
 
-  // bcrypt work factor. 12 is the production default (~350ms per hash on this
-  // hardware); the test environment lowers it, since hundreds of hashes at
-  // cost 12 would add minutes to the suite for no extra assurance.
+  // bcrypt work factor. 12 by default (~350ms per hash on a laptop); Render's
+  // free plan sets 10 (render.yaml), where 0.1 CPU made cost 12 take 5-7 s.
+  // The test environment lowers it, since hundreds of hashes at cost 12 would
+  // add minutes to the suite for no extra assurance.
   BCRYPT_COST: z.coerce.number().int().min(4).max(15).default(12),
 
   /**
@@ -157,8 +158,9 @@ const envSchema = z.object({
   // --- Rate limits for a crowd behind one address ---------------------------
   //
   // Reviewers on one college or office network share a public IP, and every
-  // per-IP limit is shared between them. Register and sign-in stay tight
-  // (they hash passwords); these two are sized for a room of people.
+  // per-IP limit is shared between them ("IP" is the visitor's address, read
+  // through lib/clientIp.ts). Register and sign-in are the tighter pair (they
+  // hash passwords); production raises them for a room (render.yaml).
 
   /**
    * "Try Live Demo" sign-ins per IP per 15 minutes. Each reviewer makes one
