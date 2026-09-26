@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChatMessage } from '@intellmeet/shared';
@@ -25,6 +25,27 @@ beforeEach(() => {
   // jsdom does no layout, so it has no scrollIntoView.
   Element.prototype.scrollIntoView = vi.fn();
 });
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+/**
+ * Takes animation frames out of the clock's hands: callbacks wait until the
+ * test calls the returned function, which is "a frame passes". Frames arrive
+ * whenever the browser gets round to them - later still when the main thread
+ * is busy with a call's video - so a correct caret must not depend on when.
+ */
+function holdAnimationFrames(): () => void {
+  const pending: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    pending.push(callback);
+    return pending.length;
+  });
+  return () => {
+    for (const callback of pending.splice(0)) callback(performance.now());
+  };
+}
 
 function renderPanel(messages: ChatMessage[] = []) {
   const onSend = vi.fn();
@@ -59,6 +80,39 @@ describe('<ChatPanel /> @mentions', () => {
 
     await user.type(input, 'can you check?{Enter}');
     expect(onSend).toHaveBeenCalledWith('Thanks @Grace Hopper can you check?');
+  });
+
+  it('keeps typing after the name when a frame passes mid-word (a fast typist, a busy tab)', async () => {
+    const frame = holdAnimationFrames();
+    const { onSend, user } = renderPanel();
+    const input = screen.getByRole('textbox', { name: 'Message' });
+
+    await user.type(input, 'Thanks @gr');
+    await user.keyboard('{Enter}');
+    // The next key is already on its way when the frame after the choice
+    // arrives - the order CI hit, and a queued keystroke in a busy call.
+    // (`skipClick`: `type` clicks first by default, which a typist does not.)
+    await user.type(input, 'c', { skipClick: true });
+    frame();
+    await user.type(input, 'an you check?{Enter}', { skipClick: true });
+
+    expect(onSend).toHaveBeenCalledWith('Thanks @Grace Hopper can you check?');
+  });
+
+  it('puts the caret straight after a name chosen mid-sentence', async () => {
+    holdAnimationFrames();
+    const { user } = renderPanel();
+    const input = screen.getByRole('textbox', { name: 'Message' });
+
+    await user.type(input, 'Hi  and bye');
+    // Back to between the two spaces, and mention somebody there.
+    await user.keyboard('{ArrowLeft>8/}');
+    await user.type(input, '@gr', { skipClick: true });
+    await user.keyboard('{Enter}');
+    // No frame has passed: the caret must already be after the name.
+    await user.type(input, 'x', { skipClick: true });
+
+    expect(input).toHaveValue('Hi @Grace Hopper x and bye');
   });
 
   it('moves through suggestions with the arrow keys, and Escape closes them', async () => {
