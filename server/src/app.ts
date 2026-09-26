@@ -42,9 +42,11 @@ import { userRouter } from './modules/users/user.routes.js';
 export function createApp(): Express {
   const app = express();
 
-  // Render and Vercel sit in front of this process, so the real client IP is
-  // in X-Forwarded-For. Without this, rate limiting (Phase 2) would bucket
-  // every request under the proxy's IP, and `req.secure` would always be false.
+  // One proxy hop is trusted: behind nginx (Docker Compose, the Kubernetes
+  // Ingress) `req.ip` is then the visitor, from the X-Forwarded-For nginx
+  // sets. On Render there are more hops than that, and `req.ip` is one of
+  // Render's own proxies (measured), so rate limits and sessions read the
+  // address through lib/clientIp.ts, which handles both.
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
 

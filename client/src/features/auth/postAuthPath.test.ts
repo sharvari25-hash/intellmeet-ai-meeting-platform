@@ -31,4 +31,24 @@ describe('postAuthPath', () => {
     expect(postAuthPath({ from: { pathname: 'https://evil.example' } }, null)).toBe('/app');
     expect(postAuthPath({ from: { pathname: '' } }, null)).toBe('/app');
   });
+
+  it('falls back to the parked page when there is no router state', () => {
+    // The landing page's Try Live Demo: a signed-out room link used to end on
+    // the dashboard, because the landing page has no `from` to read.
+    expect(postAuthPath(null, null, '/app/room/T6G59G3')).toBe('/app/room/T6G59G3');
+  });
+
+  it('prefers the router state and a pending invite over the parked page', () => {
+    expect(postAuthPath({ from: { pathname: '/app/tasks' } }, null, '/app/room/T6G59G3')).toBe(
+      '/app/tasks',
+    );
+    expect(postAuthPath(null, 'ABC234', '/app/room/T6G59G3')).toBe('/join/ABC234');
+  });
+
+  it('only ever returns to a parked page inside the app', () => {
+    expect(postAuthPath(null, null, '//evil.example/app')).toBe('/app');
+    expect(postAuthPath(null, null, 'https://evil.example/app')).toBe('/app');
+    expect(postAuthPath(null, null, '/apple')).toBe('/app');
+    expect(postAuthPath(null, null, '/login')).toBe('/app');
+  });
 });

@@ -1,6 +1,7 @@
 # Default values for the IntellMeet chart: a production-shaped install that
-# uses an external MongoDB and Redis (Atlas / Upstash) and a Secret you create
-# yourself. values-local.yaml turns this into a self-contained kind install.
+# uses an external MongoDB and Redis (e.g. MongoDB Atlas and a managed Redis)
+# and a Secret you create yourself. values-local.yaml turns this into a
+# self-contained kind install.
 
 nameOverride: ''
 fullnameOverride: ''

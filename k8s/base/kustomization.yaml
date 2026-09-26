@@ -1,6 +1,7 @@
 # The production-shaped base:  kubectl apply -k k8s/base
-# It expects an external MongoDB and Redis (Atlas / Upstash) and the
-# intellmeet-secrets Secret, created as shown in ../secret.example.yaml.
+# It expects an external MongoDB and Redis (e.g. MongoDB Atlas and a managed
+# Redis) and the intellmeet-secrets Secret, created as shown in
+# ../secret.example.yaml.
 # For a local kind cluster with in-cluster databases, use k8s/local instead.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

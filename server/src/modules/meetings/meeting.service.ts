@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import {
+  ROOM_CODE_LENGTH,
   meetingSchema,
   type CreateMeetingInput,
   type ListMeetingsQuery,
@@ -25,9 +26,6 @@ import { User } from '../users/user.model.js';
 import { describeMatches, loadPreviews, rankMeetings } from './meeting.history.js';
 import { Meeting, type MeetingDocument } from './meeting.model.js';
 
-/** Room codes are 7 characters from a 30-letter unambiguous alphabet. */
-const ROOM_CODE_LENGTH = 7;
-
 /**
  * Mints a room code that is not already taken.
  *
@@ -45,16 +43,23 @@ async function generateRoomCode(): Promise<string> {
   throw AppError.internal('Could not allocate a unique room code');
 }
 
+async function isTeamMember(teamId: string, userId: string): Promise<boolean> {
+  return Boolean(await Team.exists({ _id: teamId, 'members.userId': userId }));
+}
+
 /**
  * Confirms the user is a member of the team, which is the authorisation
  * boundary for everything meeting-related.
  */
 async function assertTeamMember(teamId: string, userId: string): Promise<void> {
-  const isMember = await Team.exists({ _id: teamId, 'members.userId': userId });
   // 404 rather than 403: confirming the team exists would leak the existence
   // of other tenants' teams, exactly as in the teams module.
-  if (!isMember) throw AppError.notFound('Team not found');
+  if (!(await isTeamMember(teamId, userId))) throw AppError.notFound('Team not found');
 }
+
+/** What somebody opening a room link for a team they are not in is told. */
+export const NOT_IN_TEAM_MESSAGE =
+  "This meeting belongs to a team you're not in. Ask the host for a team invite link.";
 
 /** All team ids the user belongs to, used to scope list queries. */
 async function myTeamIds(userId: string): Promise<Types.ObjectId[]> {
@@ -333,6 +338,10 @@ export async function getMeeting(meetingId: string, userId: string): Promise<Mee
  * checked: a code is a convenience for people who already have access, not a
  * capability that grants it. An ended meeting is rejected here rather than in
  * the UI, so a stale link gives a clear answer.
+ *
+ * Each way of failing has its own status, because each needs a different fix
+ * from the person holding the link: 404 (wrong code - check it), 403 (right
+ * code, wrong team - get an invite) and 409 (ended - read the summary).
  */
 export async function getMeetingByCode(roomCode: string, userId: string): Promise<MeetingDto> {
   const code = roomCode.toUpperCase();
@@ -347,8 +356,18 @@ export async function getMeetingByCode(roomCode: string, userId: string): Promis
 
   if (!view) throw AppError.notFound('No meeting found for that code');
 
-  await assertTeamMember(view.teamId, userId);
+  // 403 here, unlike the 404 every other meeting path gives a non-member. A
+  // 404 made "you are not in this team" read exactly like a mistyped code,
+  // so somebody who had signed up instead of using Try Live Demo was told
+  // their colleague's link did not exist. The answer confirms only that some
+  // meeting has this code - never its title, team or host - and the caller
+  // usually has the code because the host sent it. Guessing one blind means
+  // searching 30^7 (about 22 billion) codes to learn nothing but that.
+  if (!(await isTeamMember(view.teamId, userId))) {
+    throw AppError.forbidden(NOT_IN_TEAM_MESSAGE);
+  }
 
+  // After the membership check, so a non-member cannot learn even this much.
   if (view.status === 'ended') {
     throw AppError.conflict('That meeting has already ended');
   }

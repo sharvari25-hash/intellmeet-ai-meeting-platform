@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Copy, Link2, UserMinus } from 'lucide-react';
 import { toast } from 'sonner';
-import type { TeamRole } from '@intellmeet/shared';
+import { DEMO_TEAM_SLUG, type TeamRole } from '@intellmeet/shared';
 import { Spinner } from '@/components/Spinner';
 import { Avatar, AvatarFallback, AvatarImage, initials } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -95,6 +95,30 @@ function InvitePanel({ teamId }: { teamId: string }) {
   );
 }
 
+/** For a member, who cannot create invite links: how other people get in. */
+function HowPeopleJoin({ isDemo, teamName }: { isDemo: boolean; teamName: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Link2 aria-hidden="true" className="size-5 text-primary" />
+          How people join
+        </CardTitle>
+        <CardDescription>
+          {isDemo
+            ? `Everyone who uses Try Live Demo is put in ${teamName}, so nobody needs an invite. Send them a meeting link and ask them to choose Try Live Demo. Somebody signed in with their own account cannot join this team's meetings; for that, create a team of your own and share its invite link.`
+            : `Only admins can create invite links. Ask one of ${teamName}'s admins for an invite link, or create a team of your own.`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button asChild variant="outline">
+          <Link to="/app/teams">Create a team</Link>
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function TeamDetailPage() {
   const { teamId = '' } = useParams();
   const queryClient = useQueryClient();
@@ -172,8 +196,13 @@ export function TeamDetailPage() {
       </div>
 
       {/* The invite panel is admin-only on the server too; hiding it here is a
-          courtesy, not the control. */}
-      {isAdmin && <InvitePanel teamId={teamId} />}
+          courtesy, not the control. A member is told why it is missing and
+          how people get in instead, rather than left looking for it. */}
+      {isAdmin ? (
+        <InvitePanel teamId={teamId} />
+      ) : (
+        <HowPeopleJoin isDemo={team.data.slug === DEMO_TEAM_SLUG} teamName={team.data.name} />
+      )}
 
       <section aria-labelledby="members">
         <h2 id="members" className="text-lg font-semibold tracking-tight">

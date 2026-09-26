@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useSocketStore } from '@/stores/socketStore';
 import * as authApi from './auth.api';
 import { postAuthPath } from './postAuthPath';
+import { peekReturnPath } from './returnPath';
 
 function useOnSignedIn(): (result: AuthResponse) => void {
   const setSession = useAuthStore((state) => state.setSession);
@@ -21,7 +22,9 @@ function useOnSignedIn(): (result: AuthResponse) => void {
     // Peeked, not consumed: PublicOnlyRoute reaches the same decision in the
     // same commit, and clearing the code here would leave it with nothing to
     // read. The join page clears it once it has actually tried to redeem it.
-    navigate(postAuthPath(location.state, peekPendingInvite()), { replace: true });
+    navigate(postAuthPath(location.state, peekPendingInvite(), peekReturnPath()), {
+      replace: true,
+    });
   };
 }
 
@@ -47,7 +50,9 @@ function useOnSignedOut(): () => void {
   const navigate = useNavigate();
 
   return () => {
-    clearSession();
+    // Marked as a sign-out, so ProtectedRoute sends the page that re-renders
+    // first home too, rather than to /login remembering where they were.
+    clearSession({ signedOut: true });
     // Through the store rather than the socket module: this hook is imported
     // by the sign-in pages, and reaching for the library here would drag
     // socket.io-client back into the public bundle.

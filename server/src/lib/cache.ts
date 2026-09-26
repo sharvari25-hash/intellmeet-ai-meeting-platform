@@ -7,8 +7,8 @@ import { logger } from './logger.js';
  * Every operation is **fail-open**: if Redis is unreachable, a read reports a
  * miss and a write is dropped, so the caller falls through to MongoDB and the
  * request still succeeds. A cache outage should degrade latency, never
- * availability - which matters more than usual here, because the free Upstash
- * tier can drop connections.
+ * availability - which matters more than usual here, because the free Key
+ * Value instance keeps nothing on disk and comes back empty after a restart.
  */
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

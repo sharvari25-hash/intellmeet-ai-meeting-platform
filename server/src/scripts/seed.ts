@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { INVITE_CODE_LENGTH } from '@intellmeet/shared';
 import { connectMongo, disconnectMongo } from '../config/db.js';
 import { env } from '../config/env.js';
 import { connectRedis, disconnectRedis } from '../config/redis.js';
@@ -84,7 +85,7 @@ async function seed(): Promise<void> {
       ],
       inviteCodes: [
         {
-          code: generateCode(8),
+          code: generateCode(INVITE_CODE_LENGTH),
           expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           createdBy: demoUser._id,
           createdAt: new Date(),

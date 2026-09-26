@@ -1,17 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import {
-  AlertTriangle,
-  AppWindow,
-  Check,
-  Circle,
-  Copy,
-  Info,
-  Link2,
-  ShieldAlert,
-  Sparkles,
-  Users,
-} from 'lucide-react';
+import { AlertTriangle, AppWindow, Circle, Info, ShieldAlert, Sparkles, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Meeting } from '@intellmeet/shared';
 import { Badge } from '@/components/ui/badge';
@@ -30,6 +19,7 @@ import { getScreenStream, stopStream } from '@/lib/webrtc/devices';
 import { useTeamPeople } from '@/features/mentions/useTeamPeople';
 import { useAuthStore } from '@/stores/authStore';
 import { ChatPanel } from './ChatPanel';
+import { InviteDialog } from './InviteDialog';
 import { ParticipantsPanel } from './ParticipantsPanel';
 import { RoomControls } from './RoomControls';
 import { VideoGrid } from './VideoGrid';
@@ -73,7 +63,6 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [tab, setTab] = useState<'chat' | 'people'>('chat');
   const [unread, setUnread] = useState(0);
-  const [copied, setCopied] = useState(false);
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
   const [confirmingLeave, setConfirmingLeave] = useState(false);
 
@@ -260,11 +249,6 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
     return () => window.removeEventListener('pagehide', onUnload);
   }, [room]);
 
-  const inviteLink = useMemo(
-    () => `${window.location.origin}/app/room/${meeting.roomCode}`,
-    [meeting.roomCode],
-  );
-
   if (room.phase === 'ended') {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
@@ -345,23 +329,7 @@ export function MeetingRoom({ meeting, media, onLeft }: Props) {
           )}
         </p>
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            void navigator.clipboard
-              .writeText(inviteLink)
-              .then(() => {
-                setCopied(true);
-                toast.success('Invite link copied');
-              })
-              .catch(() => toast.error(`Copy this link manually: ${inviteLink}`));
-          }}
-        >
-          {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-          <Link2 aria-hidden="true" className="hidden sm:inline" />
-          Invite
-        </Button>
+        <InviteDialog meeting={meeting} />
       </header>
 
       {/* Only STUN configured: a direct path works on most home and office

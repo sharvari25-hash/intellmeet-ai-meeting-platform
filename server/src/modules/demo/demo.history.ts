@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import type { TranscriptSegment } from '@intellmeet/shared';
+import { ROOM_CODE_LENGTH, type TranscriptSegment } from '@intellmeet/shared';
 import { env } from '../../config/env.js';
 import { generateCode } from '../../lib/ids.js';
 import { logger } from '../../lib/logger.js';
@@ -146,7 +146,7 @@ export async function seedDemoHistory(options: {
           seeded: true,
           updatedAt: endedAt,
         },
-        $setOnInsert: { roomCode: generateCode(7), seedKey },
+        $setOnInsert: { roomCode: generateCode(ROOM_CODE_LENGTH), seedKey },
       },
       { upsert: true, new: true, timestamps: false },
     );

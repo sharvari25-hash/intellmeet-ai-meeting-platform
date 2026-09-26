@@ -7,8 +7,10 @@ import { withTimeout } from './db.js';
  * Single shared Redis client.
  *
  * Held in a module-level singleton rather than created per call site so that
- * connection count stays predictable - Upstash's free tier counts connections,
- * and Phase 3 (Socket.io adapter) and Phase 6 (BullMQ) will each want a handle.
+ * the connection count stays predictable: Render Key Value's free plan allows
+ * 50. Beside this one, the Socket.io adapter opens two with `duplicate()`,
+ * the BullMQ queue one, and the worker two (it duplicates its own for
+ * blocking waits), so one instance holds six.
  */
 let client: Redis | null = null;
 
@@ -24,7 +26,8 @@ export function createRedisClient(url: string): Redis {
     // Cap the backoff so a long outage does not stretch to minutes between
     // reconnect attempts.
     retryStrategy: (times) => Math.min(times * 200, 5_000),
-    // Upstash and Render Key Value use rediss:// (TLS).
+    // A Redis reached over the internet uses rediss:// (TLS). Production's
+    // Key Value is on Render's private network, as plain redis://.
     ...(url.startsWith('rediss://') ? { tls: {} } : {}),
   });
 }

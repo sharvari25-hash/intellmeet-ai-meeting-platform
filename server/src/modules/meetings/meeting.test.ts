@@ -10,6 +10,7 @@ import {
   type TestUser,
 } from '../../test/fixtures.js';
 import { Meeting } from './meeting.model.js';
+import { NOT_IN_TEAM_MESSAGE } from './meeting.service.js';
 
 const app = createApp();
 
@@ -191,15 +192,47 @@ describe('GET /api/meetings/code/:roomCode', () => {
       .expect(200);
   });
 
-  it('refuses a code for a team the caller is not in', async () => {
+  // Changed on purpose from a 404 ("Team not found"). The room page showed
+  // that as "That meeting is not available", word for word what a mistyped
+  // code shows, so somebody who had signed up instead of using Try Live Demo
+  // was told their colleague's working link did not exist. The code still
+  // grants nothing; the answer now says why, and nothing else.
+  it('refuses a code for a team the caller is not in, and says that is why', async () => {
+    const { host, teamId } = await teamWithTwoMembers();
+    const meeting = await createMeeting(host, teamId, { title: 'Acquisition shortlist' });
+    const stranger = await registerUser(app);
+
+    const response = await request(app)
+      .get(`/api/meetings/code/${meeting.roomCode}`)
+      .set('Authorization', bearer(stranger))
+      .expect(403);
+
+    expect(response.body.error.code).toBe('FORBIDDEN');
+    expect(response.body.error.message).toBe(NOT_IN_TEAM_MESSAGE);
+
+    // Nothing about the meeting leaks: not its title, id, team or host.
+    const body = JSON.stringify(response.body);
+    for (const secret of ['Acquisition shortlist', 'Test Team', meeting.id, teamId, host.name]) {
+      expect(body).not.toContain(secret);
+    }
+  });
+
+  it('does not tell a non-member that a meeting has ended', async () => {
     const { host, teamId } = await teamWithTwoMembers();
     const meeting = await createMeeting(host, teamId);
     const stranger = await registerUser(app);
 
     await request(app)
+      .post(`/api/meetings/${meeting.id}/end`)
+      .set('Authorization', bearer(host))
+      .expect(200);
+
+    const response = await request(app)
       .get(`/api/meetings/code/${meeting.roomCode}`)
       .set('Authorization', bearer(stranger))
-      .expect(404);
+      .expect(403);
+
+    expect(response.body.error.message).not.toContain('ended');
   });
 
   it('reports a clear conflict for an ended meeting rather than a bare 404', async () => {

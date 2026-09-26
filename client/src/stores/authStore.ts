@@ -24,22 +24,37 @@ interface AuthState {
    * it at all) is what survives a reload instead.
    */
   accessToken: string | null;
+  /**
+   * Whether the session ended because the user signed out, rather than
+   * expiring or being revoked. ProtectedRoute sends the first home and the
+   * second to sign in again - and only the second should come back to the
+   * page it was on.
+   */
+  signedOut: boolean;
   setSession: (user: PublicUser, accessToken: string) => void;
   /** Updates the token after a silent refresh, leaving the user object alone. */
   setAccessToken: (accessToken: string) => void;
   setUser: (user: PublicUser) => void;
-  clearSession: () => void;
+  clearSession: (options?: { signedOut?: boolean }) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   status: 'bootstrapping',
   user: null,
   accessToken: null,
+  signedOut: false,
 
-  setSession: (user, accessToken) => set({ status: 'authenticated', user, accessToken }),
+  setSession: (user, accessToken) =>
+    set({ status: 'authenticated', user, accessToken, signedOut: false }),
   setAccessToken: (accessToken) => set({ accessToken }),
   setUser: (user) => set({ user }),
-  clearSession: () => set({ status: 'anonymous', user: null, accessToken: null }),
+  clearSession: (options) =>
+    set({
+      status: 'anonymous',
+      user: null,
+      accessToken: null,
+      signedOut: options?.signedOut ?? false,
+    }),
 }));
 
 /**
