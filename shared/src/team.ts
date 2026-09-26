@@ -17,6 +17,15 @@ export const createTeamSchema = z.object({
 });
 export type CreateTeamInput = z.infer<typeof createTeamSchema>;
 
+/** The length of every team invite code; see `ROOM_CODE_LENGTH`. */
+export const INVITE_CODE_LENGTH = 8;
+
+/**
+ * The seeded demo team's slug. Every "Try Live Demo" guest is put in this
+ * team, which is how the client knows who can join a meeting held in it.
+ */
+export const DEMO_TEAM_SLUG = 'intellmeet-demo';
+
 export const joinTeamSchema = z.object({
   code: z.string().trim().toUpperCase().pipe(z.string().min(6, 'Invite code is too short').max(16)),
 });

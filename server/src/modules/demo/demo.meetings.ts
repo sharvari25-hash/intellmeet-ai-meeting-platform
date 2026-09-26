@@ -2,7 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Types, type Collection } from 'mongoose';
 import { z } from 'zod';
-import { transcriptSegmentSchema } from '@intellmeet/shared';
+import { ROOM_CODE_LENGTH, transcriptSegmentSchema } from '@intellmeet/shared';
 import { matchAssignee } from '../../lib/ai/assignee.js';
 import { generateCode, stableObjectId } from '../../lib/ids.js';
 import { MeetingInsight } from '../ai/insight.model.js';
@@ -206,7 +206,7 @@ export async function seedDemoMeetings(options: {
           aiError: null,
           seeded: true,
         },
-        $setOnInsert: { roomCode: generateCode(7), seedKey: fixture.key },
+        $setOnInsert: { roomCode: generateCode(ROOM_CODE_LENGTH), seedKey: fixture.key },
       },
       { upsert: true, new: true, timestamps: false },
     );

@@ -13,9 +13,11 @@ export const DEMO_TEAM_NAME = 'IntellMeet Demo Team';
 
 /**
  * The seeded team is identified by slug rather than by id, because the seed is
- * idempotent and may have created it on a different machine or deploy.
+ * idempotent and may have created it on a different machine or deploy. It is
+ * defined in `shared` because the client needs it too: a meeting in this team
+ * is one that anybody can join with Try Live Demo.
  */
-export const DEMO_TEAM_SLUG = 'intellmeet-demo';
+export { DEMO_TEAM_SLUG } from '@intellmeet/shared';
 
 export const DEMO_TEAMMATES = [
   { name: 'Ada Lovelace', email: 'ada@intellmeet.app', role: 'admin' as const },

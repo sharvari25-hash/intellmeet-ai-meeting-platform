@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import {
+  INVITE_CODE_LENGTH,
   teamSchema,
   type Team as TeamDto,
   type TeamInvite,
@@ -129,7 +130,7 @@ export async function getTeam(teamId: string, userId: string): Promise<TeamDto> 
 export async function createInvite(teamId: string, userId: string): Promise<TeamInvite> {
   const team = await getTeamForAdmin(teamId, userId);
 
-  let code = generateCode(8);
+  let code = generateCode(INVITE_CODE_LENGTH);
   // 30^8 ≈ 6.5e11 combinations, so a retry is close to impossible - but
   // "close to" is not "never", and the unique-ish lookup is cheap.
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -138,7 +139,7 @@ export async function createInvite(teamId: string, userId: string): Promise<Team
       'inviteCodes.expiresAt': { $gt: new Date() },
     });
     if (!clash) break;
-    code = generateCode(8);
+    code = generateCode(INVITE_CODE_LENGTH);
   }
 
   const expiresAt = new Date(Date.now() + INVITE_TTL_MS);

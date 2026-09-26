@@ -25,6 +25,13 @@ export const aiStatusSchema = z.enum(AI_STATUSES);
 export type AiStatus = z.infer<typeof aiStatusSchema>;
 
 /**
+ * The length of every room code the server mints. Room and team invite codes
+ * share an alphabet, so length is the only thing that tells them apart - and
+ * people do paste one where the other belongs (`INVITE_CODE_LENGTH`).
+ */
+export const ROOM_CODE_LENGTH = 7;
+
+/**
  * Room codes are typed by humans from a chat message or read aloud on a call,
  * so they use the same unambiguous alphabet as invite codes (no I/L/O/U/0/1).
  */
