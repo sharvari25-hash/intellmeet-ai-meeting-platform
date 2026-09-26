@@ -1,6 +1,8 @@
 import {
   useId,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
   type KeyboardEvent,
@@ -41,6 +43,27 @@ export function useMentionAutocomplete({
   const [query, setQuery] = useState<{ start: number; text: string } | null>(null);
   const [active, setActive] = useState(0);
 
+  /**
+   * Where the caret belongs after a name is chosen, until the field shows it.
+   *
+   * Writing a field's value puts its caret at the end, so after the choice
+   * re-renders the field the caret has to be moved back to just after the
+   * name. A layout effect runs in the same commit as that write, before the
+   * browser handles another key or paints. The move used to wait for the next
+   * animation frame, and a key pressed in between (a fast typist, or a queued
+   * keystroke while a call's video keeps the main thread busy) was typed first
+   * and then overtaken: "Thanks @Grace Hopper an you check?c".
+   */
+  const pendingCaret = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const caret = pendingCaret.current;
+    const field = inputRef.current;
+    if (caret === null || !field || field.value !== value) return;
+    pendingCaret.current = null;
+    field.focus();
+    field.setSelectionRange(caret, caret);
+  });
+
   const suggestions = useMemo(() => {
     if (!query) return [];
     const typed = query.text.toLowerCase();
@@ -70,15 +93,12 @@ export function useMentionAutocomplete({
     if (!query) return;
     const end = query.start + 1 + query.text.length;
     const inserted = `@${person.name} `;
+    // The caret goes after the name as part of the render that writes it
+    // (the layout effect above), never later: a key pressed before a later
+    // moment would land first and then be overtaken by the move.
+    pendingCaret.current = query.start + inserted.length;
     onValueChange(`${value.slice(0, query.start)}${inserted}${value.slice(end)}`);
     setQuery(null);
-
-    // Put the caret after the name, once the new value has rendered.
-    const caret = query.start + inserted.length;
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(caret, caret);
-    });
   }
 
   /** Returns true when the key was for the suggestions, and must not do anything else. */
