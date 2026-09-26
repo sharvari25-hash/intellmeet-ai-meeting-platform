@@ -48,12 +48,18 @@ export class AppError extends Error {
   }
 
   /**
-   * 5xx messages describe internals, so they are replaced with a generic
-   * string before they leave the process. 4xx messages are written for the
-   * caller and are safe to return as-is.
+   * 5xx messages describe internals, so in production they are replaced with
+   * a generic string before they leave the process. 4xx messages are written
+   * for the caller and are safe to return as-is.
+   *
+   * 503 is the exception. Nothing turns a caught error into one (the handler
+   * makes unknown errors 500s); every 503 is thrown on purpose with a message
+   * for the person reading it - "The demo is busy right now. Please try again
+   * in a few minutes" - which "Internal server error" would replace with
+   * something that reads like a crash.
    */
   get isClientSafe(): boolean {
-    return this.status < 500;
+    return this.status < 500 || this.code === 'SERVICE_UNAVAILABLE';
   }
 
   static badRequest(message: string, options?: AppErrorOptions): AppError {
