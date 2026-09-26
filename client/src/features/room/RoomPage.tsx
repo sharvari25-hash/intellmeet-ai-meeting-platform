@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
+import { INVITE_CODE_LENGTH, ROOM_CODE_LENGTH } from '@intellmeet/shared';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApiError } from '@/lib/apiClient';
 import { getMeetingByCode, meetingKeys } from '@/features/meetings/meetings.api';
+import { useAuthStore } from '@/stores/authStore';
 import { Lobby } from './Lobby';
 import { MeetingRoom } from './MeetingRoom';
 import { useLocalMedia } from './useLocalMedia';
@@ -50,25 +52,12 @@ export function RoomPage() {
   }
 
   if (meeting.isError) {
-    const isGone =
-      meeting.error instanceof ApiError &&
-      (meeting.error.code === 'NOT_FOUND' || meeting.error.code === 'CONFLICT');
-
     return (
-      <div className="mx-auto max-w-md py-16 text-center">
-        <AlertTriangle aria-hidden="true" className="mx-auto size-8 text-destructive" />
-        <h1 className="mt-4 text-xl font-semibold tracking-tight">
-          {isGone ? 'That meeting is not available' : 'Could not open the meeting'}
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {meeting.error instanceof ApiError
-            ? meeting.error.message
-            : 'Check the room code and try again.'}
-        </p>
-        <Button asChild variant="outline" className="mt-6">
-          <Link to="/app">Back to the dashboard</Link>
-        </Button>
-      </div>
+      <RoomUnavailable
+        error={meeting.error}
+        roomCode={roomCode}
+        onRetry={() => void meeting.refetch()}
+      />
     );
   }
 
@@ -85,5 +74,98 @@ export function RoomPage() {
         navigate('/app');
       }}
     />
+  );
+}
+
+/**
+ * Why a room code did not open a room, and what to do about it.
+ *
+ * Every one of these used to read "That meeting is not available", so a
+ * working link sent to somebody outside the team looked exactly like a typo,
+ * and nobody could tell which of the fixes below they needed.
+ */
+function RoomUnavailable({
+  error,
+  roomCode,
+  onRetry,
+}: {
+  error: unknown;
+  roomCode: string;
+  onRetry: () => void;
+}) {
+  const isGuest = useAuthStore((state) => state.user?.authProvider === 'guest');
+  const code = error instanceof ApiError ? error.code : null;
+
+  let title: string;
+  let body: ReactNode;
+  let action: ReactNode = null;
+
+  if (code === 'FORBIDDEN') {
+    title = "You're not in this meeting's team";
+    body = (
+      <>
+        <p>{(error as ApiError).message}</p>
+        {/* Every Try Live Demo guest is in one team, so somebody who signed up
+            instead can never be let into a demo meeting - but can still join
+            it the way the host did. A guest seeing this already is one. */}
+        {!isGuest && (
+          <p>
+            Is the host using Try Live Demo? Every demo guest is in the same team: sign out, open
+            this link again and choose Try Live Demo.
+          </p>
+        )}
+      </>
+    );
+  } else if (code === 'NOT_FOUND' || code === 'VALIDATION_ERROR') {
+    title = 'No meeting has that code';
+    const looksLikeInvite = roomCode.length === INVITE_CODE_LENGTH;
+    body = looksLikeInvite ? (
+      <p>
+        Room codes have {ROOM_CODE_LENGTH} characters. {roomCode.toUpperCase()} has{' '}
+        {INVITE_CODE_LENGTH}, like a team invite code.
+      </p>
+    ) : (
+      <p>Check the code and try again. Room codes have {ROOM_CODE_LENGTH} characters.</p>
+    );
+    if (looksLikeInvite) {
+      action = (
+        <Button asChild>
+          <Link to={`/join/${encodeURIComponent(roomCode)}`}>Use it as a team invite</Link>
+        </Button>
+      );
+    }
+  } else if (code === 'CONFLICT') {
+    title = 'This meeting has ended';
+    body = (
+      <p>
+        The host ended it, or it closed on its own after everyone had left. Its summary and action
+        items are in the meeting history.
+      </p>
+    );
+    action = (
+      <Button asChild>
+        <Link to="/app/meetings">Meeting history</Link>
+      </Button>
+    );
+  } else {
+    title = 'Could not open the meeting';
+    body = (
+      <p>{error instanceof ApiError ? error.message : 'Check your connection and try again.'}</p>
+    );
+    action = <Button onClick={onRetry}>Try again</Button>;
+  }
+
+  return (
+    <div className="mx-auto max-w-md py-16 text-center">
+      <AlertTriangle aria-hidden="true" className="mx-auto size-8 text-destructive" />
+      <h1 className="mt-4 text-xl font-semibold tracking-tight">{title}</h1>
+      <div className="mt-2 space-y-2 text-sm text-muted-foreground">{body}</div>
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
+        {action}
+        <Button asChild variant="outline">
+          <Link to="/app">Back to the dashboard</Link>
+        </Button>
+      </div>
+    </div>
   );
 }
