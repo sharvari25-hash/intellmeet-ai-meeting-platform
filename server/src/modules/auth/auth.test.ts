@@ -8,7 +8,7 @@ import {
 } from '@intellmeet/shared';
 import { createApp } from '../../app.js';
 import { env } from '../../config/env.js';
-import { resetRateLimits } from '../../middleware/rateLimit.js';
+import { ACCOUNT_LOGIN_FAILURES_PER_15_MIN, resetRateLimits } from '../../middleware/rateLimit.js';
 import { DEMO_TEAM_SLUG } from '../demo/demo.constants.js';
 import { Meeting } from '../meetings/meeting.model.js';
 import { Team } from '../teams/team.model.js';
@@ -544,6 +544,135 @@ describe('rate limits for a room of reviewers behind one address', () => {
     } finally {
       env.RATE_LIMIT_DEMO_PER_15_MIN = limit;
     }
+  });
+});
+
+/**
+ * Headers as production delivers them (lib/clientIp.ts). Through the Vercel
+ * rewrite: Vercel wrote the visitor, Cloudflare appended Vercel and set
+ * CF-Connecting-IP to it, Render's proxy came last. Direct: Cloudflare's
+ * CF-Connecting-IP is the caller.
+ */
+const VERCEL_EGRESS = '198.51.100.20';
+const RENDER_PROXY = '10.214.3.9';
+const viaVercel = (visitor: string) => ({
+  'CF-Connecting-IP': VERCEL_EGRESS,
+  'X-Forwarded-For': `${visitor}, ${VERCEL_EGRESS}, ${RENDER_PROXY}`,
+});
+const direct = (visitor: string) => ({
+  'CF-Connecting-IP': visitor,
+  'X-Forwarded-For': `${visitor}, ${RENDER_PROXY}`,
+});
+
+/** The `remaining` count from the draft-7 `RateLimit` header. */
+function remaining(response: { headers: Record<string, unknown> }): number {
+  return Number(/remaining=(\d+)/.exec(String(response.headers.ratelimit))?.[1]);
+}
+
+describe('rate limits in production key on the visitor, not the proxies', () => {
+  it('gives every visitor a bucket of its own, though all arrive through the same proxies', async () => {
+    const first = await request(app).post('/api/auth/refresh').set(viaVercel('203.0.113.1'));
+    const again = await request(app).post('/api/auth/refresh').set(viaVercel('203.0.113.1'));
+    const other = await request(app).post('/api/auth/refresh').set(viaVercel('203.0.113.2'));
+
+    expect(remaining(again)).toBe(remaining(first) - 1);
+    // Keyed on the proxies (Express's `trust proxy`), this would be one less
+    // again: every visitor in one bucket, which is what production measured.
+    expect(remaining(other)).toBe(remaining(first));
+  });
+
+  it('keeps one visitor in one bucket whether it comes through Vercel or directly', async () => {
+    const rewritten = await request(app).post('/api/auth/refresh').set(viaVercel('203.0.113.3'));
+    const straight = await request(app).post('/api/auth/refresh').set(direct('203.0.113.3'));
+
+    expect(remaining(straight)).toBe(remaining(rewritten) - 1);
+  });
+
+  it('records the visitor on the session, not a proxy', async () => {
+    await seedDemoWorkspace();
+
+    const response = await request(app)
+      .post('/api/auth/demo')
+      .set(viaVercel('203.0.113.50'))
+      .expect(201);
+
+    const guest = await User.findById(response.body.user.id).select('+refreshTokens');
+    expect(guest?.refreshTokens.map((token) => token.ip)).toEqual(['203.0.113.50']);
+  });
+});
+
+describe('sign-in limits for a room of judges on one network', () => {
+  it('reads the register and sign-in budget from RATE_LIMIT_AUTH_PER_15_MIN', async () => {
+    const limit = env.RATE_LIMIT_AUTH_PER_15_MIN;
+    env.RATE_LIMIT_AUTH_PER_15_MIN = 3;
+
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await request(app)
+          .post('/api/auth/login')
+          .send({ email: `nobody-${attempt}@example.com`, password: 'WrongPassword123' })
+          .expect(401);
+      }
+      const blocked = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'nobody-3@example.com', password: 'WrongPassword123' })
+        .expect(429);
+      expect(blocked.body.error.message).toBe('Too many requests. Please try again shortly.');
+    } finally {
+      env.RATE_LIMIT_AUTH_PER_15_MIN = limit;
+    }
+  });
+
+  it('reads the failed sign-in budget per address and account from RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN', async () => {
+    const user = await registerUser(app);
+    const limit = env.RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN;
+    env.RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN = 10;
+
+    try {
+      // Ten typos across a room on one network: still allowed to get it right.
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await request(app)
+          .post('/api/auth/login')
+          .send({ email: user.email, password: 'WrongPassword123' })
+          .expect(401);
+      }
+      const blocked = await request(app)
+        .post('/api/auth/login')
+        .send({ email: user.email, password: user.password })
+        .expect(429);
+      expect(blocked.body.error.message).toMatch(/too many sign-in attempts/i);
+    } finally {
+      env.RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN = limit;
+    }
+  });
+
+  it('caps failed sign-ins per account however many addresses a caller claims', async () => {
+    const victim = await registerUser(app);
+    const bystander = await registerUser(app);
+
+    // A caller who bypasses Vercel can name a new address every time
+    // (lib/clientIp.ts), so every per-address limit starts fresh.
+    for (let attempt = 0; attempt < ACCOUNT_LOGIN_FAILURES_PER_15_MIN; attempt += 1) {
+      await request(app)
+        .post('/api/auth/login')
+        .set(direct(`203.0.113.${attempt + 1}`))
+        .send({ email: victim.email, password: 'WrongPassword123' })
+        .expect(401);
+    }
+
+    const blocked = await request(app)
+      .post('/api/auth/login')
+      .set(direct('203.0.113.200'))
+      .send({ email: victim.email, password: victim.password })
+      .expect(429);
+    expect(blocked.body.error.message).toMatch(/for this account/i);
+
+    // Only that account: everyone else signs in as usual.
+    await request(app)
+      .post('/api/auth/login')
+      .set(direct('203.0.113.200'))
+      .send({ email: bystander.email, password: bystander.password })
+      .expect(200);
   });
 });
 

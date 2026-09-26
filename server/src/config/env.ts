@@ -172,6 +172,21 @@ const envSchema = z.object({
    */
   RATE_LIMIT_REFRESH_PER_15_MIN: z.coerce.number().int().min(1).max(100_000).default(600),
 
+  /**
+   * Register and password sign-in per IP per 15 minutes. Each hashes a
+   * password; each reviewer signs in as a seeded team-mate for the second
+   * window of a call.
+   */
+  RATE_LIMIT_AUTH_PER_15_MIN: z.coerce.number().int().min(1).max(10_000).default(30),
+
+  /**
+   * Failed sign-ins per IP *and* email per 15 minutes. A room on one network
+   * shares this budget for each seeded team-mate, so a few typos by several
+   * people add up. (A separate limit of 30 per account, whatever the address,
+   * is fixed: it is the one that must hold against a determined guesser.)
+   */
+  RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN: z.coerce.number().int().min(1).max(1_000).default(5),
+
   // --- Live meetings ----------------------------------------------------------
 
   /**

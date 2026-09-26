@@ -55,13 +55,21 @@ services:
       # PORT is injected by Render; the server reads it.
 
       # --- Where the web client is (the Vercel domain) -----------------------
-      # Not secret. `sync: false` only until the Vercel project exists (it is
-      # created after this service, whose URL it needs); then these become
-      # plain values here.
+      # The only origin the API and Socket.io accept, and the base of invite
+      # links. Vercel's longer aliases for the same deployment are not
+      # included: share this domain only.
       - key: CORS_ORIGINS
-        sync: false
+        value: https://intellmeet-ai-meeting-platform-clie.vercel.app
       - key: CLIENT_URL
-        sync: false
+        value: https://intellmeet-ai-meeting-platform-clie.vercel.app
+
+      # --- Rate limits for a room of judges on one network -------------------
+      # Per client IP (lib/clientIp.ts). Reviewers behind one college NAT share
+      # each budget; each signs in as a seeded team-mate for a second window.
+      - key: RATE_LIMIT_AUTH_PER_15_MIN
+        value: '60'
+      - key: RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN
+        value: '10'
 
       # --- Data stores ---------------------------------------------------------
       # Atlas M0 (Singapore). Secret: contains the database password.

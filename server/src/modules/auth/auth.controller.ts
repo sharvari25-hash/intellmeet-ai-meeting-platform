@@ -1,5 +1,6 @@
 import type { Request, RequestHandler, Response } from 'express';
 import { REFRESH_COOKIE_NAME } from '@intellmeet/shared';
+import { clientIp } from '../../lib/clientIp.js';
 import { currentUser } from '../../middleware/requireAuth.js';
 import * as authService from './auth.service.js';
 import { clearRefreshCookie, setRefreshCookie } from './auth.tokens.js';
@@ -15,7 +16,8 @@ import { clearRefreshCookie, setRefreshCookie } from './auth.tokens.js';
 function sessionContext(req: Request): authService.SessionContext {
   return {
     userAgent: req.get('user-agent')?.slice(0, 200),
-    ip: req.ip,
+    // The visitor, not the proxy in front of the API (lib/clientIp.ts).
+    ip: clientIp(req),
   };
 }
 

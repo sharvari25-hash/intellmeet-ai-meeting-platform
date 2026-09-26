@@ -3,6 +3,7 @@ import rateLimit, { MemoryStore, type Store } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { getRedis } from '../config/redis.js';
 import { env, isTest } from '../config/env.js';
+import { clientIp } from '../lib/clientIp.js';
 import { AppError } from '../lib/errors.js';
 
 /**
@@ -14,7 +15,8 @@ import { AppError } from '../lib/errors.js';
  * buckets and walk straight past the limit.
  */
 function ipBucket(req: Request): string {
-  const ip = req.ip ?? 'unknown';
+  // The visitor, not the proxy in front of us: see lib/clientIp.ts.
+  const ip = clientIp(req);
 
   // Express reports IPv4 over IPv6 sockets as "::ffff:127.0.0.1".
   const mapped = ip.startsWith('::ffff:') ? ip.slice('::ffff:'.length) : ip;
@@ -133,7 +135,20 @@ function createLimiter(options: LimiterOptions): RequestHandler {
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
 /**
- * Login limiter: 5 *failed* attempts per 15 minutes per IP **and** email.
+ * The email a sign-in is for, normalised as accounts store it.
+ *
+ * Mounted after `express.json()`, so `req.body` is already parsed - but it is
+ * read defensively, because the limiters run *before* validation and the body
+ * may be absent or malformed.
+ */
+function loginEmail(req: Request): string {
+  const body = req.body as { email?: unknown } | undefined;
+  return typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+}
+
+/**
+ * Login limiter: *failed* attempts per 15 minutes per IP **and** email
+ * (`RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN`, default 5).
  *
  * Keying on both is what makes this useful. IP alone punishes everyone behind
  * a corporate NAT when one colleague fat-fingers a password; email alone lets
@@ -143,36 +158,54 @@ const FIFTEEN_MINUTES = 15 * 60 * 1000;
  *
  * Only failures count. A correct password is not a guess, and counting it
  * meant five people in one room signing in as the same seeded team-mate
- * locked the sixth out for a quarter of an hour.
- *
- * Mounted after `express.json()`, so `req.body` is already parsed - but it is
- * read defensively, because the limiter runs *before* validation and the body
- * may be absent or malformed.
+ * locked the sixth out for a quarter of an hour. Adjustable because a room of
+ * reviewers on one network shares this budget for each seeded team-mate.
  */
 export const loginLimiter = createLimiter({
   prefix: 'login',
   windowMs: FIFTEEN_MINUTES,
-  limit: 5,
+  limit: () => env.RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN,
   skipSuccessfulRequests: true,
   message: 'Too many sign-in attempts. Please try again in 15 minutes.',
-  keyGenerator: (req) => {
-    const body = req.body as { email?: unknown } | undefined;
-    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
-    return `${ipBucket(req)}|${email}`;
-  },
+  keyGenerator: (req) => `${ipBucket(req)}|${loginEmail(req)}`,
+});
+
+/** Failed sign-ins for one account from everywhere at once, per 15 minutes. */
+export const ACCOUNT_LOGIN_FAILURES_PER_15_MIN = 30;
+
+/**
+ * Failed sign-ins per account, whatever the address.
+ *
+ * The limiter above is keyed on the caller's IP, and in production a caller
+ * who bypasses the Vercel rewrite can choose the address the API sees
+ * (lib/clientIp.ts). This one ignores the address entirely, so guessing one
+ * account's password stays slow however many addresses are claimed. It is
+ * set well above what a person or a room of people mistyping produces; the
+ * price is that someone failing on purpose 30 times can hold an account shut
+ * for 15 minutes, which is why it is not the only limit.
+ */
+export const accountLoginLimiter = createLimiter({
+  prefix: 'login-account',
+  windowMs: FIFTEEN_MINUTES,
+  limit: ACCOUNT_LOGIN_FAILURES_PER_15_MIN,
+  skipSuccessfulRequests: true,
+  message: 'Too many failed sign-ins for this account. Please try again in 15 minutes.',
+  keyGenerator: (req) => `email:${loginEmail(req)}`,
 });
 
 /**
- * Register and sign-in, per IP: 30 per 15 minutes.
+ * Register and sign-in, per IP (`RATE_LIMIT_AUTH_PER_15_MIN`, default 30).
  *
- * Both hash a password (bcrypt, ~350ms of CPU each at cost 12), and register
- * creates an account, so this is the tight one. Every request counts,
- * successful or not: the cost being bounded is the hashing itself.
+ * Both hash a password (bcrypt: ~350ms of CPU at cost 12, far longer on a
+ * small shared CPU), and register creates an account, so this is the tight
+ * one. Every request counts, successful or not: the cost being bounded is the
+ * hashing itself. Adjustable because reviewers on one network each sign in as
+ * a seeded team-mate for the second window of a call.
  */
 export const authLimiter = createLimiter({
   prefix: 'auth',
   windowMs: FIFTEEN_MINUTES,
-  limit: 30,
+  limit: () => env.RATE_LIMIT_AUTH_PER_15_MIN,
   message: 'Too many requests. Please try again shortly.',
 });
 
