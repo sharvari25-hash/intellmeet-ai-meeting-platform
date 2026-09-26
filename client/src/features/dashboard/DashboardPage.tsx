@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import { CalendarClock, Radio, Users, Video } from 'lucide-react';
+import { INVITE_CODE_LENGTH, ROOM_CODE_LENGTH } from '@intellmeet/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -15,6 +16,7 @@ import { useAiStatusUpdates } from '@/features/meetings/useAiStatusUpdates';
 import { listMeetings, meetingKeys } from '@/features/meetings/meetings.api';
 import { listTeams, teamKeys } from '@/features/teams/teams.api';
 import { useAuthStore } from '@/stores/authStore';
+import { joinPath, parseJoinInput } from './joinCode';
 
 /** Readable date for a meeting row, without pulling in a date library. */
 function formatWhen(iso: string): string {
@@ -100,13 +102,21 @@ export function DashboardPage() {
   const user = useAuthStore((state) => state.user);
   const navigate = useNavigate();
   const [joinCode, setJoinCode] = useState('');
+  const [joinError, setJoinError] = useState<string | null>(null);
 
   const teams = useQuery({ queryKey: teamKeys.all, queryFn: listTeams });
 
   function onJoin(event: FormEvent) {
     event.preventDefault();
-    const code = joinCode.trim().toUpperCase();
-    if (code) navigate(`/app/room/${code}`);
+    const target = parseJoinInput(joinCode);
+    if (!target) {
+      setJoinError(
+        `That is not a code we recognise. Room codes have ${ROOM_CODE_LENGTH} characters, like T6G59G3.`,
+      );
+      return;
+    }
+    // A team invite code goes to the join page, which redeems it.
+    navigate(joinPath(target));
   }
 
   return (
@@ -164,25 +174,38 @@ export function DashboardPage() {
                 <CalendarClock aria-hidden="true" className="size-5 text-primary" />
                 Join with a code
               </CardTitle>
-              <CardDescription>The 7-character code from a meeting invite.</CardDescription>
+              <CardDescription>
+                The {ROOM_CODE_LENGTH}-character room code, or the whole meeting link. A team&apos;s{' '}
+                {INVITE_CODE_LENGTH}-character invite code works here too.
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={onJoin} className="flex flex-col gap-2 sm:flex-row">
+              <form onSubmit={onJoin} noValidate className="flex flex-col gap-2 sm:flex-row">
                 <Label htmlFor="room-code" className="sr-only">
                   Room code
                 </Label>
                 <Input
                   id="room-code"
                   value={joinCode}
-                  onChange={(event) => setJoinCode(event.target.value)}
+                  onChange={(event) => {
+                    setJoinCode(event.target.value);
+                    setJoinError(null);
+                  }}
                   placeholder="T6G59G3"
                   autoCapitalize="characters"
                   className="uppercase"
+                  aria-invalid={Boolean(joinError)}
+                  aria-describedby={joinError ? 'room-code-error' : undefined}
                 />
                 <Button type="submit" variant="outline" disabled={!joinCode.trim()}>
                   Join
                 </Button>
               </form>
+              {joinError && (
+                <p id="room-code-error" className="mt-2 text-sm text-destructive">
+                  {joinError}
+                </p>
+              )}
             </CardContent>
           </Card>
         </div>
