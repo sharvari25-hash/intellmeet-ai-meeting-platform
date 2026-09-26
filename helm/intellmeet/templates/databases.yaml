@@ -1,8 +1,9 @@
 {{- if .Values.localDatabases.enabled }}
 {{- /*
 LOCAL ONLY (localDatabases.enabled): a throwaway MongoDB and Redis, one
-replica each, emptyDir storage, no authentication. Production points
-MONGODB_URI and REDIS_URL at Atlas and Upstash / Render Key Value instead.
+replica each, emptyDir storage, no authentication. A real cluster points
+MONGODB_URI and REDIS_URL at a managed MongoDB and Redis instead (the live
+deployment on Render uses MongoDB Atlas and Render Key Value).
 Both run as their images' own non-root user (999), so the pods pass the
 "restricted" Pod Security Standard like the application's.
 */ -}}

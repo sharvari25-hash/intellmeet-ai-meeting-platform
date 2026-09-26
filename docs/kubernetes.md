@@ -1,8 +1,8 @@
 # Kubernetes and Helm: the scalable path
 
-**Production runs on Vercel (client) and Render (API).** That is the
-deployment the live demo uses, because both have free tiers and no cluster to
-operate. The Kubernetes manifests and the Helm chart in this repository show
+**Production runs on Vercel (client) and Render (API)**
+([`deployment.md`](./deployment.md)). That is the deployment the live demo
+uses, because both have free tiers and no cluster to operate. The Kubernetes manifests and the Helm chart in this repository show
 how the same two images run when one instance is no longer enough: several API
 pods behind an Ingress, autoscaled on CPU, optionally with the AI worker as a
 Deployment of its own. They are validated locally; nothing in production
@@ -16,7 +16,7 @@ depends on them.
                                                     │   │ Socket.io Redis adapter,
                                                     │   │ rate limits, presence, BullMQ
                                                     ▼   ▼
-                                               MongoDB   Redis     (Atlas / Upstash,
+                                               MongoDB   Redis     (managed services,
                                                                     or local-only pods)
 ```
 
@@ -44,7 +44,7 @@ depends on them.
 | **`maxUnavailable: 0`, a preStop pause, 30 s grace** | A new pod is ready before an old one goes; the 5 s pause lets endpoint removal reach the Ingress before SIGTERM; 30 s is more than the server's own 10 s graceful shutdown. |
 | **Secrets created outside Helm by default** | `secrets.create=false` references an existing Secret, so values never sit in a values file or in Helm's release history. `values-local.yaml` creates one for kind, with `JWT_SECRET` passed on the command line. |
 | **Config checksums on the pod template** | The ConfigMap is read at start-up only; a `helm upgrade` that changes a setting rolls the pods. |
-| **Local databases are a separate, labelled opt-in** | `k8s/local/databases.yaml` and `localDatabases.enabled` exist only so the stack runs on a laptop. Single replica, emptyDir, no auth; production uses Atlas and Upstash. |
+| **Local databases are a separate, labelled opt-in** | `k8s/local/databases.yaml` and `localDatabases.enabled` exist only so the stack runs on a laptop. Single replica, emptyDir, no auth; a real cluster uses a managed MongoDB and Redis (the live deployment on Render uses Atlas and Render Key Value, [`deployment.md`](./deployment.md)). |
 
 ### About the Ingress controller
 

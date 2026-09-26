@@ -1,7 +1,8 @@
 # LOCAL ONLY: a throwaway MongoDB and Redis inside the cluster, so the stack
 # runs on kind with no cloud accounts. Single replica, emptyDir storage (data
-# is lost when the pod goes), no authentication. Production uses MongoDB
-# Atlas and Upstash / Render Key Value instead.
+# is lost when the pod goes), no authentication. A real cluster points at a
+# managed MongoDB and Redis instead (the live deployment on Render uses
+# MongoDB Atlas and Render Key Value).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
