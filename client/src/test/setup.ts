@@ -42,7 +42,12 @@ beforeEach(() => {
   // starting conditions. 'bootstrapping' is the real initial state - resetting
   // to 'anonymous' would let a route guard redirect before the session had a
   // chance to be restored, which is not how the app behaves.
-  useAuthStore.setState({ status: 'bootstrapping', user: null, accessToken: null });
+  useAuthStore.setState({
+    status: 'bootstrapping',
+    user: null,
+    accessToken: null,
+    signedOut: false,
+  });
   resetRefreshState();
 
   // A parked invite code outlives a test otherwise, and would redirect the

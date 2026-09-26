@@ -12,17 +12,31 @@
  *
  * Sharing one function makes the race harmless: both answers are identical.
  */
-export function postAuthPath(state: unknown, pendingInvite: string | null): string {
+export function postAuthPath(
+  state: unknown,
+  pendingInvite: string | null,
+  returnPath: string | null = null,
+): string {
   // An invite outranks the remembered page. Someone who followed an invite
   // link came here to join a team, and the join page sends them onward to it.
   if (pendingInvite) return `/join/${encodeURIComponent(pendingInvite)}`;
 
   const from = (state as { from?: { pathname?: string } } | null)?.from?.pathname;
+  if (isSamePath(from)) return from;
 
-  // Only a same-origin path from our own router state is honoured. The
-  // second test is not redundant: `//evil.example` starts with a slash and is
-  // a protocol-relative URL, so a lone `startsWith('/')` is an open redirect.
-  if (from?.startsWith('/') && !from.startsWith('//')) return from;
+  // Parked by ProtectedRoute for a visitor who left the sign-in page before
+  // signing in, e.g. for the landing page's Try Live Demo. Only ever a page
+  // inside the app, since that is the only thing that parks one.
+  if (isSamePath(returnPath) && /^\/app(\/|$)/.test(returnPath)) return returnPath;
 
   return '/app';
+}
+
+/**
+ * Only a same-origin path is honoured. The second test is not redundant:
+ * `//evil.example` starts with a slash and is a protocol-relative URL, so a
+ * lone `startsWith('/')` is an open redirect.
+ */
+function isSamePath(path: string | null | undefined): path is string {
+  return Boolean(path?.startsWith('/') && !path.startsWith('//'));
 }
