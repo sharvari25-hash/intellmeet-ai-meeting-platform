@@ -112,7 +112,7 @@ stays until the constraint is real.
 
 ---
 
-## NAT traversal: STUN today, TURN when needed
+## NAT traversal: STUN, and TURN for the networks that need it
 
 WebRTC has to find a path between two browsers that are both behind home
 routers. Three things can happen:
@@ -128,14 +128,16 @@ routers. Three things can happen:
    peers cannot reach each other at all, and traffic has to be **relayed**
    through a **TURN** server.
 
-IntellMeet currently ships **Google's public STUN only**. `GET
-/api/rtc/ice-servers` returns `hasTurn: false`, and the room shows a banner
-saying so rather than letting a call fail silently.
+`GET /api/rtc/ice-servers` always returns Google's public STUN servers, and a
+TURN relay when one is configured. **Production has one: Metered** (since
+Phase 12), so `hasTurn` is `true` there. Without TURN (local development, by
+default) it is `false`, and the room shows a notice saying so rather than
+letting a call fail silently.
 
-### When TURN becomes necessary
+### When TURN is necessary
 
 Roughly 10–20% of connections on the public internet need a relay. Concretely,
-expect failures when:
+without one, expect failures when:
 
 - Someone joins from a **corporate or university network** that blocks UDP or
   forces traffic through a proxy.
@@ -148,21 +150,29 @@ Two laptops on one home WiFi, or a laptop and a phone on the same network,
 connect on STUN alone. That is why local testing succeeds while a demo over a
 conference network may not.
 
-### Adding TURN
+### The relay in production
 
-[Metered](https://www.metered.ca/tools/openrelay/) has a free tier of 500 MB of
-relayed traffic per month, which is ample for demos (relay is only used for the
-connections that need it). Add to `server/.env`:
+[Metered](https://www.metered.ca)'s free plan relays 500 MB a month (the
+conservative figure; see `docs/deployment.md`), which covers demos because
+only the connections that need a relay use it. Production offers four URLs,
+so at least one gets through almost any network:
 
-```bash
-TURN_URLS=turn:standard.relay.metered.ca:80,turns:standard.relay.metered.ca:443
-TURN_USERNAME=<from the Metered dashboard>
-TURN_CREDENTIAL=<from the Metered dashboard>
-```
+| URL | For |
+| --- | --- |
+| `turn:global.relay.metered.ca:80` | UDP, the fastest, where UDP is allowed |
+| `turn:global.relay.metered.ca:80?transport=tcp` | networks that block UDP |
+| `turn:global.relay.metered.ca:443` | UDP on port 443 |
+| `turns:global.relay.metered.ca:443?transport=tcp` | TLS on 443: looks like HTTPS, which college and office firewalls let out |
 
-Restart the API. `hasTurn` becomes `true`, the banner disappears, and the
-credential is served from the API at call time — never embedded in the client
-bundle, which is public and would leak a relay somebody else pays for.
+All four were checked before launch: a headless Chromium forced to relay-only
+set up a relay on each. The URLs are in `render.yaml`; the username and
+credential are Render secrets, served by the API at call time (to signed-in
+users, cached privately for 60 s) and never embedded in the public bundle.
+A signed-in user can still read them, which is how TURN works; the free
+plan's hard stop at its quota bounds the cost of misuse.
+
+Locally, the same three variables in `server/.env` switch it on
+(`TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`; see `server/.env.example`).
 
 ---
 
@@ -275,7 +285,23 @@ sequenceDiagram
   backoff, network errors included.
   Permanent errors (deleted meeting, missing file, rejected key) stop at once.
   The final failure stores a UI-safe message built from status codes, never
-  from provider responses.
+  from provider responses. A job lost with the queue (a Redis restart) is
+  failed by the housekeeping sweep instead (see "AI runs whose job was
+  lost").
+- **The API downloads only its own recordings.** `POST
+  /meetings/:id/recording` names a Cloudinary URL that the server will later
+  fetch, so it is an SSRF surface. Since Phase 12 it accepts only the exact
+  delivery URL of the named asset: `https://res.cloudinary.com/<cloud>/video/upload/[v<n>/]intellmeet/recordings/<id>.<ext>`,
+  parsed and normalised first, with no port, login, query or fragment, no
+  transformation and no fetch URL (which would make Cloudinary download any
+  address for us). The download refuses redirects and gives up after two
+  minutes, and a recording already attached to another meeting is refused.
+- **Recordings leave with their meeting.** Deleting a meeting (by its host,
+  the demo cleanup, or a guest ending their session) destroys its Cloudinary
+  asset too, as does replacing a recording. A Cloudinary failure never
+  blocks the deletion (each call gives up after 10 s): it is logged with the
+  asset's id for removal by hand. Only ids inside `intellmeet/recordings/`
+  are ever destroyed, whatever the database says.
 
 ---
 
@@ -367,8 +393,25 @@ instances running it at once waste a little effort rather than doing harm.
 
 | Cadence | Job |
 | --- | --- |
-| 30 s after start, then every 5 min | End live meetings everybody has left; once a week, move the seeded history forward (see Analytics); put the demo board's sample tasks back once the board has been quiet |
-| 1 min after start, then every `DEMO_CLEANUP_INTERVAL_MIN` (30) | Demo cleanup: idle guests with what they made, stale demo content |
+| 30 s after start, then every 5 min | End live meetings everybody has left; once a week, move the seeded history forward (see Analytics); put the demo board's sample tasks back once the board has been quiet; fail AI runs whose queue job was lost (below) |
+| 1 min after start, then every `DEMO_CLEANUP_INTERVAL_MIN` (30) | Demo cleanup: idle guests with what they made (Cloudinary recordings included), stale demo content |
+
+### AI runs whose job was lost
+
+Production's Redis (Render Key Value, free) keeps nothing on disk, so a
+restart empties the BullMQ queue. A meeting whose job was waiting or running
+would then show "Transcribing" forever: the job that would move it on no
+longer exists, and the host's Retry button only appears on a failed run.
+
+`failLostAiRuns` (`modules/ai/ai.recovery.ts`) finds meetings in `queued`,
+`transcribing` or `summarizing` whose status has not changed for 10 minutes,
+asks the queue which meetings it still holds (one atomic read of every
+pending state, so a job moving between states cannot look lost), and fails
+the rest with "Processing was interrupted (the job queue restarted). Press
+Retry to run it again." The update is conditional on the status and its
+timestamp being unchanged, so a job that finishes at that moment wins. The
+queue is only asked when something looks stale, and an index on `{aiStatus,
+updatedAt}` keeps the check cheap.
 
 ### Ending meetings everybody has left
 
@@ -429,14 +472,28 @@ judge on one network got a 429: on the landing page as "Too many requests",
 and on a reload as being signed out (the client reads a failed refresh as "no
 session").
 
-| Limiter | Key | Budget | Why |
+| Limiter | Key | Budget (default / production) | Why |
 | --- | --- | --- | --- |
 | Refresh | IP | 600 / 15 min (`RATE_LIMIT_REFRESH_PER_15_MIN`) | Nothing to guess (256-bit tokens): it only bounds a runaway client or a flood |
 | Demo sign-in | IP | 60 / 15 min (`RATE_LIMIT_DEMO_PER_15_MIN`) | Creates an account, so bounded twice: here, and for everyone by `DEMO_MAX_GUESTS` |
-| Register + sign-in | IP | 30 / 15 min | Each hashes a password (bcrypt, ~350 ms CPU); unchanged |
-| Failed sign-in | IP + email | 5 / 15 min | Now counts **failures only**: a correct password is not a guess |
+| Register + sign-in | IP | 30 / **60** per 15 min (`RATE_LIMIT_AUTH_PER_15_MIN`) | Each hashes a password (bcrypt: ~350 ms at cost 12 on a laptop, seconds on Render's 0.1 CPU). Every judge in a room also signs in as a seeded team-mate for a second window |
+| Failed sign-in | IP + email | 5 / **10** per 15 min (`RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN`) | Counts **failures only**: a correct password is not a guess. Several people mistyping one team-mate's password share it |
+| Failed sign-in | **account**, any address | 30 / 15 min, fixed | The limit that holds against a guesser who can choose the address the API sees (below) |
 | Board edits | account | 120 / min | Dragging cards is bursty; per account, so a room does not share it |
 | Analytics reads | account | 120 / min | A range nobody has asked for is a cache miss that runs the aggregations; this bounds how many one person can start |
+
+**Which address is "IP".** Behind Render, Express's `req.ip` is one of
+Render's own proxies, and before Phase 12's fix every visitor in production
+shared one or two buckets (measured). `lib/clientIp.ts` reads the visitor's
+address from `CF-Connecting-IP`, which Cloudflare (in front of every Render
+service) sets and a caller cannot forge, and, when the request came through
+the Vercel rewrite, from the public address Vercel wrote just before it in
+`X-Forwarded-For`. The address the API sees is then the same on both paths
+(REST through Vercel, Socket.io direct). Its limit: a caller who skips Vercel
+can put any address in that position and choose their bucket, which is why
+the per-account limit above exists and why the demo has a global guest
+ceiling. `docs/deployment.md` ("Client IP addresses") has the header chains
+and the live measurements.
 
 **Why refresh is not keyed on the session.** The refresh token rotates on
 every call, so it is a different key each time. The only stable session key,
@@ -696,22 +753,42 @@ mode. Animation is off under `prefers-reduced-motion`.
 
 ---
 
-## Deployment topology (Phase 11)
+## Deployment topology (Phases 11 and 12)
 
-**Production runs on Vercel and Render.** The same two images also run
-under Docker Compose and on Kubernetes, which is the path for when one
-instance is not enough.
+**Production runs on Vercel and Render** (live since Phase 12;
+`docs/deployment.md` has every service, variable and procedure). The same
+two images also run under Docker Compose and on Kubernetes, which is the
+path for when one instance is not enough.
 
 ```
-Production (free tiers)                       Scalable path (k8s/, helm/intellmeet)
-──────────────────────────                    ─────────────────────────────────────
+Production (free tiers, Singapore)            Scalable path (k8s/, helm/intellmeet)
+──────────────────────────────────            ─────────────────────────────────────
 Vercel ── static client                       Ingress ─ /          → client pods (nginx)
    └─ rewrite /api/* ──► Render               Ingress ─ /api       → API pods (HPA 2-6)
 browser ── Socket.io ───► Render              Ingress ─ /socket.io → API pods (sticky)
 Render: one container from                    API pods ─ Redis adapter, BullMQ, rate limits
   server/Dockerfile, worker in-process        optional worker Deployment (worker.enabled)
-MongoDB Atlas, Upstash Redis                  MongoDB / Redis: managed, or local-only pods
+MongoDB Atlas M0, Render Key Value            MongoDB / Redis: managed, or local-only pods
+Metered TURN, Cloudinary, Gemini
+cron-job.org keep-alive ─► /api/health
 ```
+
+What Phase 12 had to add for the free-tier production, beyond configuration
+(`render.yaml`, `client/vercel.json`):
+
+- **The visitor's address** (`lib/clientIp.ts`), because Render's proxies
+  hide it from `req.ip` (see "Rate limits for a room").
+- **Recovery from an empty queue** (`ai.recovery.ts`), because the free Key
+  Value keeps nothing on disk (see "AI runs whose job was lost").
+- **A stricter Cloudinary guard and deletion with the meeting**, because
+  recordings now really live there (see "Recording and the AI pipeline").
+- **bcrypt cost 10 on Render**: at 0.1 CPU, cost 12 took 5-7 s per sign-in,
+  and a few at once could starve the health check.
+- **Deliberate 503 messages shown in production.** The error handler hides
+  every 5xx message in production, which also turned "The demo is busy right
+  now" into "Internal server error". 503s are only ever thrown on purpose,
+  with text written for the person reading it, so they are shown
+  (`AppError.isClientSafe`); other 5xx messages stay hidden.
 
 What makes the API scale out without code changes was decided in earlier
 phases: Socket.io broadcasts go through the Redis adapter (Phase 3), rate

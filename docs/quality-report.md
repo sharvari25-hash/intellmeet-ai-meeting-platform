@@ -1,20 +1,23 @@
-# Quality report (Phase 10)
+# Quality report (Phase 10, updated in Phase 12)
 
 Tests and coverage, the accessibility audit, Lighthouse scores, the bundle
-analysis and the edge cases the plan lists, measured on 25 September 2026.
-The raw reports are in [`quality/`](./quality/).
+analysis and the edge cases the plan lists, measured on 25 September 2026;
+test counts, coverage and the live Lighthouse runs of the landing page
+updated for Phase 12 on 26 September 2026. The raw local reports are in
+[`quality/`](./quality/).
 
-**Where it was measured:** the production build (`vite build`, served by
-`vite preview` on port 5173, which gzips like a CDN) against the production
-API build (`node dist/server.js`) with local MongoDB and Redis, on a Windows
-11 laptop, headless Chrome 153, Lighthouse 13.5.0. Not measured against the
-live Vercel/Render deployment, which does not exist yet (Phase 12).
+**Where it was measured:** in Phase 10, the production build (`vite build`,
+served by `vite preview` on port 5173, which gzips like a CDN) against the
+production API build (`node dist/server.js`) with local MongoDB and Redis, on
+a Windows 11 laptop, headless Chrome 153, Lighthouse 13.5.0. In Phase 12,
+the same Lighthouse against the live deployment (Vercel and Render); see
+"Lighthouse on the live site".
 
 ## Targets and results
 
 | Target (PROJECT_PLAN.md, Phase 10) | Result |
 | --- | --- |
-| Server coverage ≥ 50%, critical modules higher | ✅ 94.8% statements; auth 95.6, meetings 98.2, AI pipeline 89.3, tasks 98.2 |
+| Server coverage ≥ 50%, critical modules higher | ✅ 94.8% statements; auth 95.6, meetings 98.3, AI pipeline 89.4, tasks 98.2 |
 | E2E: demo login → create → join → chat → end → summary → create task → move task | ✅ one test, one meeting (`e2e/recording.spec.ts`) |
 | Keyboard-only walkthrough | ✅ automated (`e2e/keyboard.spec.ts`), focus visible at every stop |
 | ARIA on all icon buttons | ✅ axe `button-name`: 0 violations on 24 page states |
@@ -23,29 +26,48 @@ live Vercel/Render deployment, which does not exist yet (Phase 12).
 | Route-level code splitting | ✅ every page but the landing page is lazy |
 | Image optimisation via Cloudinary | ✅ avatars (the only images), see the caveat below |
 | Bundle analysis | ✅ `npm run analyze -w @intellmeet/client` |
-| Lighthouse Performance ≥ 85 | ✅ landing page: median **85** of 12 mobile runs, **99** desktop. ⚠️ signed-in dashboard on mobile: **64** |
+| Lighthouse Performance ≥ 85 | ✅ landing page: median **85** of 12 mobile runs, **99** desktop; **live: 87 mobile, 100 desktop**. ⚠️ signed-in dashboard on mobile: **64** (local; not yet measured live) |
 | Initial load < 3 s | ✅ landing page LCP **1.9-2.3 s** on simulated mobile, **0.5 s** desktop |
 | Edge cases: expired token, reconnect, host leaves, duplicate tabs, empty states | ✅ two bugs fixed, two behaviours added (below) |
 
 ## 1. Tests and coverage
 
+Current (Phase 12, 26 September 2026):
+
 | Suite | Tests | Coverage (statements / branches / functions / lines) |
 | --- | --- | --- |
-| Server (Vitest, Supertest, real Socket.io, in-memory MongoDB) | **514** passed | **94.79 / 85.58 / 94.87 / 94.79 %** (gate 90 / 80 / 90 / 90) |
-| Client (Vitest, Testing Library) | **218** passed | **79.04 / 82.34 / 74.33 / 79.04 %** (reported, not gated) |
-| End to end (Playwright, production build) | **17** passed | - |
+| Server (Vitest, Supertest, real Socket.io, in-memory MongoDB) | **555** passed | **94.81 / 86.25 / 94.83 / 94.81 %** (gate 90 / 80 / 90 / 90) |
+| Client (Vitest, Testing Library) | **250** passed | **82.76 / 83.14 / 74.50 / 82.76 %** (reported, not gated) |
+| End to end (Playwright, production build) | **17** passed (CI on `main`) | - |
+
+At the end of Phase 10 they were 514 server tests (94.79 / 85.58 / 94.87 /
+94.79 %) and 218 client tests. Phase 12 added 41 server tests (the client IP
+helper, room-sized and per-account sign-in limits, 503 messages, the lost-job
+recovery sweep, the Cloudinary URL guard and recording deletion, and the
+room-code answers for somebody outside the team) and 32 client tests (the
+mention caret race, and 30 for the join fix: the room page's reasons, Join
+with a code, a signed-out room link through Try Live Demo, signing out, the
+Invite dialog and the team page).
 
 Critical server modules (statements / branches / functions / lines):
 
 | Module | Files | Coverage |
 | --- | --- | --- |
 | auth | 4 | 95.6 / 84.9 / 100 / 95.6 % |
-| meetings | 7 | 98.2 / 85.4 / 100 / 98.2 % |
-| AI pipeline (`modules/ai`, `lib/ai`, `jobs`) | 18 | 89.3 / 85.7 / 88.4 / 89.3 % |
+| meetings | 7 | 98.3 / 85.7 / 100 / 98.3 % |
+| AI pipeline (`modules/ai`, `lib/ai`, `jobs`) | 19 | 89.4 / 86.2 / 87.8 / 89.4 % |
+| recordings | 4 | 95.7 / 83.8 / 100 / 95.7 % |
 | tasks | 12 | 98.2 / 87.0 / 98.7 / 98.2 % |
 | sockets | 5 | 86.6 / 81.1 / 90.6 / 86.6 % |
 
 Machine-readable: [`quality/coverage-summary.json`](./quality/coverage-summary.json).
+
+**One timing failure in an earlier run.** An earlier Phase 12 client run
+failed one test: `AnalyticsPage` "opens on the team you have been in
+longest" waited its 5 s for the charts' heading while that file took 47 s
+under coverage (29 s normally). The file alone, and the whole suite again,
+passed, and so did the final run above. It is a ceiling under load, not a
+race in the page; if it recurs, that one wait can be given a longer ceiling.
 
 **The end-to-end suite** grew from 8 tests to 17: the full journey above, axe
 on every page in both themes (6), the keyboard walkthrough (1), and the two
@@ -182,6 +204,30 @@ median is the fair figure and the range is shown. Best practices is 96 on the
 landing page for one reason: an anonymous visitor's session check answers 401,
 which Chrome logs as a console error.
 
+### Lighthouse on the live site (Phase 12)
+
+The same Lighthouse 13.5.0, from the same laptop with the same simulated
+throttling, against <https://intellmeet-ai-meeting-platform-clie.vercel.app>
+on 26 September 2026, after the production smoke test, with the API awake:
+
+| Page | Runs | Performance | FCP | LCP | TBT | CLS | A11y / Best practices / SEO |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Landing, mobile | 3 | **median 87** (85-88) | 1.8-1.9 s | 1.8-2.0 s | 420-510 ms | 0 | 100 / 96 / 100 |
+| Landing, desktop | 3 | **100** (100-100) | 0.4 s | 0.4 s | 10-70 ms | 0 | 100 / 96 / 100 |
+| Dashboard (signed in) | - | ⏳ not measured live yet | | | | | |
+
+**Compared with the local runs:** the landing page is slightly faster live
+(mobile median 85 → 87, LCP 1.9-2.3 → 1.8-2.0 s; desktop 99 → 100). Vercel
+answers the document in 20 ms from its CDN. Three runs are too few to say
+anything about the spread, and blocking time is still measured on the
+laptop's CPU. Best practices is 96 for
+the same reason as locally: an anonymous visitor's session check answers 401,
+which Chrome logs as a console error. The six reports are not in the
+repository.
+
+**The signed-in dashboard** needs a demo guest's refresh cookie, as the local
+runs did; it has not been measured on the live site yet.
+
 ### What changed, and what did not work
 
 | Change | Effect |
@@ -289,7 +335,7 @@ Chrome profile after the report is written; the report is fine.
 ## Known limitations
 
 - **The signed-in dashboard is 64 on simulated mobile** (97 desktop); see
-  above.
+  above. It has not been measured on the live site yet.
 - **A rare end-to-end flake, older than this phase:** twice in about 150 test
   runs, a lazy page's JavaScript failed to download from `vite preview`
   during a two-browser test ("Failed to fetch dynamically imported module").
@@ -297,8 +343,8 @@ Chrome profile after the report is written; the report is fine.
   module download (checked), so a retry inside the app cannot recover it; CI
   retries the test once, which does, and records a trace of the failed try.
 - **Lighthouse on this laptop is noisy** (blocking time 340-1,300 ms on the
-  same build); numbers from the deployed site, in Phase 12, will be the
-  reference.
+  same build); the live site's numbers ("Lighthouse on the live site") are
+  the reference.
 - **No avatar upload yet,** so the Cloudinary transform has nothing to
   transform in the demo.
 - **The keyboard walkthrough moves a task with the Column picker,** the
