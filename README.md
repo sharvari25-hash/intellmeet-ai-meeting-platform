@@ -131,6 +131,8 @@ Coverage: `npm run test:coverage -w @intellmeet/server` (or `-w
 | GET | `/api/health/ready` | – | Readiness (503 when a dependency is down) |
 | POST | `/api/auth/register` | – | Create an account (shares sign-in's 30 / 15 min per IP, 60 in production) |
 | POST | `/api/auth/login` | – | Sign in (per 15 min: 30 attempts per IP, 60 in production; failed ones 5 per IP+email, 10 in production, and 30 per account from any address) |
+| GET | `/api/auth/google` | – | Start Google OAuth 2.0 + OpenID Connect sign-in |
+| GET | `/api/auth/google/link` | bearer | Start secure Google linking for the signed-in account |
 | POST | `/api/auth/demo` | – | "Try Live Demo": create a guest in the demo team and sign in as it |
 | DELETE | `/api/auth/demo` | Bearer | End a guest's demo session: delete the guest and what it made (guests only) |
 | POST | `/api/auth/refresh` | cookie | Rotate the refresh token |
