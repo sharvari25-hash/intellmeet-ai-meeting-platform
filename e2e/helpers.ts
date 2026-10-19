@@ -74,6 +74,9 @@ function recordGuest(guest: DemoGuest): void {
 /** Signs in as a seeded team-mate, so the two contexts are different people. */
 export async function signInAsTeammate(page: Page): Promise<void> {
   await page.goto('/login');
+  // The page opens on the emailed code; a seeded team-mate has a password and
+  // no mailbox, so it signs in the other way.
+  await page.getByRole('button', { name: 'Use a password instead' }).click();
   await page.getByLabel('Email').fill(DEMO_TEAMMATE.email);
   await page.getByLabel('Password').fill(DEMO_TEAMMATE.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
