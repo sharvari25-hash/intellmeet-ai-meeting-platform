@@ -5,6 +5,134 @@ be missing, and what comes next. Updated at the end of every phase.
 
 ---
 
+## Email sign-in codes ✅ (after Phase 12; Brevo setup and two live checks pending)
+
+**Added:** 2026-10-19. Sign up and sign in with a six-digit code emailed to the
+person; passwords stay for the accounts that have one. The design and the
+reasoning are in [`docs/architecture.md`](./docs/architecture.md) ("Email
+sign-in codes"); the Brevo setup is in [`docs/deployment.md`](./docs/deployment.md)
+("Email sign-in codes"), and **has to be done before this is merged** (below).
+
+Two choices were the owner's: **code sign-in and sign-up alongside the existing
+passwords** (not instead: the seeded team-mates have passwords and no mailbox,
+and 165 places in the test suite create users through `/api/auth/register`),
+and **Brevo with no domain of their own**.
+
+### Built
+
+- **`POST /api/auth/code`** (`{ purpose: 'login' | 'register', email, name? }`,
+  202 and the same body for every address) and **`POST /api/auth/code/verify`**
+  (`{ email, code }`, a normal session). `server/src/modules/auth/auth.codes.ts`,
+  `loginCode.model.ts` (one document per address, a TTL index, an HMAC of the
+  code), `emailVerifiedAt` on the user, the contract in `shared/src/auth.ts`.
+- **`server/src/lib/email/`**, shaped like `lib/ai`: an `EmailProvider`
+  interface, a `console` provider (prints the email; development and tests), a
+  `brevo` provider (HTTPS API), the three templates, and a test seam
+  (`setEmailProvider`, `test/mailbox.ts`).
+- **Five limiters** in `rateLimit.ts` (per IP, one per address per minute, five
+  per address per 15 minutes, the server's daily ceiling, wrong codes), and two
+  new options: `skipFailedRequests` and `unavailable` (503 instead of 429).
+- **Settings** (`env.ts`, `.env.example`, `render.yaml`): `EMAIL_PROVIDER`,
+  `BREVO_API_KEY`, `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME`, `EMAIL_DAILY_LIMIT`,
+  `LOGIN_CODE_TTL_MIN`, `LOGIN_CODE_RESEND_SEC`, `LOGIN_CODE_MAX_ATTEMPTS`,
+  `RATE_LIMIT_CODE_REQUEST_PER_15_MIN`. The server refuses to start with
+  `brevo` selected and the key or sender missing.
+- **The screens:** `EmailCodeForm` (the address, then the code with a resend
+  countdown, shared by both pages), `useSecondsUntil`. `/register` is now a
+  name and an email, then the code. `/login` opens on the code, with **Use a
+  password instead** one link away.
+- **Docs:** README (a section, the API table, the tuning table),
+  `docs/architecture.md`, `docs/deployment.md` (setup, limits, troubleshooting),
+  `server/.env.example`.
+
+### Decisions & trade-offs
+
+The full table is in `docs/architecture.md`. The ones that were not obvious:
+
+| Decision | Why |
+| --- | --- |
+| **The response never depends on whether an account exists** | Every address gets the same 202; the *email* differs ("no account, create one" / "you already have one, sign in"). The cooldown is a rate limiter keyed on the address, not a field on the stored code, because the stored code exists only for some addresses and a different "60 s left" would tell a stranger which. |
+| **An unverified password account is taken over by whoever proves its address** | `/api/auth/register` never checked the address. Without this, an attacker could register a victim's address with a password only they know and wait for the victim to sign up with a code. The first proof marks the account verified and removes its password and every session; the account and its data stay. The cost is that someone who made a password account with their own address loses the password the first time they use a code. |
+| **Codes in MongoDB, not Redis** | Render's Key Value keeps nothing on disk; a restart would invalidate every code in flight. |
+| **A 503, not a 429, at the daily ceiling** | The caller did nothing wrong; Brevo's free 300 a day is spent. Passwords and the demo still work. |
+| **`console` is refused in production** | It would log every code and deliver nothing. The endpoints answer 503 with a plain message until Brevo is set. |
+| **A link, not tabs, for the password form** | Radix labels each tab panel with its tab's text, so a "Password" tab made two things labelled "Password" (see bug 1). |
+| **`/api/auth/register` kept, with no screen using it** | The test suite builds its users with it. It is now the only way to make an account with an unproven address; see the limitations. |
+
+### Bugs found while building
+
+1. **A "Password" tab labelled two things "Password".** The first version of
+   the sign-in page had two tabs. Radix sets each panel's `aria-labelledby` to
+   its tab, so `getByLabelText('Password')` found the panel and the field (five
+   tests failed with "multiple elements"), and Playwright's `getByLabel` in the
+   e2e helper would have broken the same way in CI. Replaced by a link.
+2. **A test helper that did nothing the second time.** The inbox-cap test
+   moved the clock with `vi.useFakeTimers({ now })` in a loop; vitest ignores
+   it once the clock is already faked, so the later requests ran at a frozen
+   time and hit the cooldown. Found because the test failed. `vi.setSystemTime`
+   moves it every time.
+3. **A guarantee with no test.** Mutation-checking the security-critical lines
+   (remove the attempt ceiling from the lookup, leave the password in place when
+   claiming, do not spend the code) showed two caught and one **surviving**:
+   without `attempts < max` in the lookup, nothing failed, because the
+   sequential path deletes the code at the limit anyway. The filter is what
+   makes "five tries" hold under parallel guesses, so there is now a test that
+   sets that state directly (counter at the ceiling, code not yet cleaned up);
+   it fails without the filter.
+4. **Five of my own files failed Prettier, and one test failed the typecheck**
+   (a fetch stub's signature); both found by the full checks, not the targeted
+   runs.
+5. **`JoinTeamPage.test.tsx` signed in and signed up through the old forms.**
+   Three of its tests failed in the full client run. They guard the invite
+   flow (the redirect that once overwrote the trip back to the invite); they
+   now go through the code flow, with a new one for signing in with a code from
+   the invite screen, and the password path through the new link.
+
+### Known limitations
+
+- **Brevo is not set up**, so nothing here has sent a real email. See "Pending".
+- **No browser end-to-end test of the whole flow:** it needs the code from a
+  mailbox, and the suite has none. Covered instead by supertest (the API),
+  component tests (the screens) and the axe pass.
+- **The daily email ceiling can be spent** by a caller with many addresses on
+  many networks (10 requests per 15 minutes each). The effect is a 503 on code
+  sign-in until the window ends.
+- **The count of the day's emails is in Key Value**, which keeps nothing on
+  disk: a restart zeroes it, and Brevo itself then refuses past 300.
+- **`POST /api/auth/register` still creates accounts with unproven addresses**
+  (nothing in the UI calls it). The takeover rule covers the ones that exist.
+- **`docker-compose.prod.yml` and Kubernetes** run `NODE_ENV=production`, so the
+  code endpoints answer 503 there until Brevo is configured (the chart's values
+  do not list the new variables).
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `npm run lint`, `npm run format:check`, `npm run typecheck` | ✅ clean in all three workspaces |
+| `npm run test:coverage -w @intellmeet/server` | ✅ **602 passed** (47 new), 94.92 / 86.70 / 94.94 / 94.92 % (gate 90 / 80 / 90 / 90) |
+| `npm run test:coverage -w @intellmeet/client` | ✅ **268 passed** (18 new), 83.02 / 83.56 / 74.69 / 83.02 % |
+| The security-critical lines, mutated one at a time | ✅ all three caught (one only after adding a test: bug 3); each file restored byte for byte |
+| axe (WCAG 2.0/2.1 A + AA), real Chrome, the client served by Vite and the two API calls mocked | ✅ 8 new states × light and dark, 0 violations: sign in (address, password, code, wrong code, malformed code), sign up (address, with errors, code); the code field is focused after the request, Enter submits |
+| The same states in `e2e/a11y.spec.ts`, and `signInAsTeammate` | ⏳ **not run**: Docker (MongoDB and Redis) was not running here. CI will run them; the equivalent script above passed |
+
+### Pending
+
+1. **Brevo.** Not yet done by the owner. One verified sender address works
+   without a domain (Brevo emails it a 6-digit code to confirm), but a
+   free-mailbox sender (`gmail.com` and the like) cannot be domain-authenticated:
+   Brevo may rewrite the from address to `@brevosend.com`, and the messages may
+   land in spam. Unknown until it runs: where the codes arrive from and whether
+   they reach the inbox. Steps, with a key check that prints no secret:
+   `docs/deployment.md`, "Email sign-in codes".
+2. **Before merging:** set `BREVO_API_KEY` and `EMAIL_FROM_ADDRESS` on Render
+   (the secrets only in the dashboard, never in chat). `render.yaml` now
+   selects `EMAIL_PROVIDER=brevo`, and the server refuses to start without both,
+   so a deploy that reaches Render without them fails (the old one keeps
+   running).
+
+---
+
 ## Phase 12 — Deployment: Vercel + Render ✅ (two live checks pending)
 
 **Live since:** 2026-09-26. **Completed:** 2026-09-26, with two live checks

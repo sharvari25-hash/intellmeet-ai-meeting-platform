@@ -26,7 +26,7 @@ storage).
 
 ## What it does
 
-- Sign up, create or join a **team workspace**, invite members
+- Sign up and sign in with a **code emailed to you** (or a password), create or join a **team workspace**, invite members
 - **Real-time video meetings** (WebRTC) with chat, screen sharing, participant list and recording
 - After a meeting, **AI produces** a transcript, summary, key decisions and action items with assignees
 - Action items become **Kanban tasks** with real-time board sync
@@ -129,7 +129,9 @@ Coverage: `npm run test:coverage -w @intellmeet/server` (or `-w
 | --- | --- | --- | --- |
 | GET | `/api/health` | – | Liveness + per-dependency status |
 | GET | `/api/health/ready` | – | Readiness (503 when a dependency is down) |
-| POST | `/api/auth/register` | – | Create an account (shares sign-in's 30 / 15 min per IP, 60 in production) |
+| POST | `/api/auth/code` | – | Email a 6-digit sign-in or sign-up code (`{ purpose: 'login' \| 'register', email, name? }`); answers 202 the same for every address ([Email sign-in codes](#email-sign-in-codes)) |
+| POST | `/api/auth/code/verify` | – | Spend the code (`{ email, code }`): signs in, creating the account first for a sign-up |
+| POST | `/api/auth/register` | – | Create an account with a password (no screen uses it any more; shares sign-in's 30 / 15 min per IP, 60 in production) |
 | POST | `/api/auth/login` | – | Sign in (per 15 min: 30 attempts per IP, 60 in production; failed ones 5 per IP+email, 10 in production, and 30 per account from any address) |
 | POST | `/api/auth/demo` | – | "Try Live Demo": create a guest in the demo team and sign in as it |
 | DELETE | `/api/auth/demo` | Bearer | End a guest's demo session: delete the guest and what it made (guests only) |
@@ -215,7 +217,7 @@ Signalling is relayed without being parsed — media never touches the server.
 | Route | Access | What |
 | --- | --- | --- |
 | `/` | public | Landing page with the **Try Live Demo** button |
-| `/login`, `/register` | signed out | Auth forms built on the shared zod schemas |
+| `/login`, `/register` | signed out | Sign in or sign up with an emailed code (a password too, on `/login`), on the shared zod schemas |
 | `/join/:code` | public | Redeems a team invite; signs you in first if needed |
 | `/app` | protected | Dashboard — start a meeting, join by code, recent meetings |
 | `/app/teams`, `/app/teams/:id` | protected | Create/join a team, members, invite link |
@@ -457,6 +459,53 @@ team's entries are dropped as soon as something that feeds them changes: a
 task written, a meeting ended or deleted, minutes corrected, a done column
 changed. Names and membership are never cached, so a rename shows at once.
 
+## Email sign-in codes
+
+Sign-up is a name and an email address, sign-in is an address; either way the
+server emails a six-digit code, and entering it starts the same session a
+password does (the same access token, the same httpOnly refresh cookie).
+Sign-up creates the account when the code is entered, with **no password**, and
+with an address that has been proven to be the person's. A password still works
+for accounts that have one: the seeded team-mates, and any made before codes
+existed ("Use a password instead" on `/login`).
+
+- **Two calls.** `POST /api/auth/code` takes `{ purpose, email, name? }` and
+  answers `202 { expiresInSec, resendAfterSec }`; `POST /api/auth/code/verify`
+  takes `{ email, code }` and answers like a sign-in.
+- **The answer never depends on whether an account exists.** What differs is
+  the email: an address with no account that asks to sign in is told to sign
+  up, and one that has an account and asks to sign up is told to sign in. A
+  stranger typing addresses into the form learns nothing.
+- **A code is worth five guesses, and one use.** One document per address in
+  MongoDB (so a Key Value restart cannot lose codes in flight), holding an
+  HMAC of the code keyed with `JWT_SECRET`, not the code; replaced when another
+  is requested; removed by a TTL index after `LOGIN_CODE_TTL_MIN` (10) minutes.
+  The guess counter is incremented in the same atomic update that finds the
+  code, and a correct code is deleted by one conditional delete, so parallel
+  requests can neither out-guess the ceiling nor use a code twice.
+- **Limits**, in layers: per IP `RATE_LIMIT_CODE_REQUEST_PER_15_MIN` (10); per
+  address one code every `LOGIN_CODE_RESEND_SEC` (60) and five emails per 15
+  minutes, whoever asks and whether or not the address has an account; the
+  whole server `EMAIL_DAILY_LIMIT` (250, under Brevo's free 300 a day), after
+  which code requests answer 503 and passwords and the demo carry on; ten wrong
+  codes per IP and address per 15 minutes.
+- **Never for the seeded or guest accounts.** Their addresses are made up, and
+  a code would be a way into the demo team for anyone who came to own the
+  domain.
+- **An unverified password account is taken over by whoever proves its
+  address.** `POST /api/auth/register` never checked the address, so someone
+  could register a stranger's with a password only they know. The first time
+  the real owner proves it with a code, the account's password and every
+  session are removed (the account and its data stay). The cost: someone who
+  made a password account with their own address and later signs in with a
+  code loses the password. They can use codes from then on.
+- **Delivery** is `EMAIL_PROVIDER`: `console` (the default) prints the email,
+  code included, in the terminal that runs `npm run dev`, so it works with no
+  account; `brevo` sends over Brevo's HTTPS API (not SMTP, which Render's free
+  web services block). The server refuses `console` in production and answers
+  503 instead of logging codes. Setting up Brevo:
+  [`docs/deployment.md`](./docs/deployment.md#email-sign-in-codes).
+
 ## Demo mode: a guest per sign-in
 
 **Try Live Demo** (`POST /api/auth/demo`) creates a **new guest account** each
@@ -651,8 +700,8 @@ Nothing secret is committed. Each workspace ships a documented
 ### Demo-day tuning (set these on Render if needed)
 
 Every one of these has a sensible default and is documented in
-`server/.env.example`. Production sets only the two sign-in limits, in
-`render.yaml`. Change them there rather than in Render's dashboard: the
+`server/.env.example`. Production sets only the two sign-in limits and
+`EMAIL_DAILY_LIMIT`, in `render.yaml`. Change them there rather than in Render's dashboard: the
 Blueprint reapplies the file's values on every sync. Any variable not in the
 file can be added in the dashboard (**Environment**, then **Save and
 deploy**).
@@ -663,6 +712,8 @@ deploy**).
 | `RATE_LIMIT_REFRESH_PER_15_MIN` | 600 | Session refreshes per IP per 15 minutes (one per page load, one per open tab every 15 minutes) |
 | `RATE_LIMIT_AUTH_PER_15_MIN` | 30 (**60** on Render) | Register and password sign-in per IP per 15 minutes, successful or not (each hashes a password) |
 | `RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN` | 5 (**10** on Render) | Failed sign-ins per IP and email per 15 minutes. Separately, 30 failures per account from any address lock that account for 15 minutes; that one is fixed |
+| `RATE_LIMIT_CODE_REQUEST_PER_15_MIN` | 10 | Sign-in codes requested per IP per 15 minutes (each can cost an email). Per address, whoever asks: one code every `LOGIN_CODE_RESEND_SEC` (60) and five emails per 15 minutes (fixed) |
+| `EMAIL_DAILY_LIMIT` | 250 (set in `render.yaml`) | Emails the server sends in 24 hours, for everyone (Brevo's free plan allows 300); beyond it code requests answer 503 |
 | `DEMO_MAX_GUESTS` | 200 | Guest accounts that may exist at once; beyond it demo sign-in answers 503 until the sweep makes room |
 | `DEMO_DATA_TTL_HOURS` | 6 | Idle guests, and demo content older than this, are swept |
 | `DEMO_CLEANUP_INTERVAL_MIN` | 30 | How often that sweep runs |
