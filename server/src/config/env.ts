@@ -49,6 +49,9 @@ const envFlag = (fallback: boolean) =>
 /** Which implementation of `AIProvider` does the transcription and analysis. */
 export const AI_PROVIDERS = ['mock', 'groq', 'gemini'] as const;
 
+/** Which implementation of `EmailProvider` delivers the sign-in codes. */
+export const EMAIL_PROVIDERS = ['console', 'brevo'] as const;
+
 /**
  * Environment contract for the server.
  *
@@ -155,6 +158,54 @@ const envSchema = z.object({
    */
   DEMO_MAX_GUESTS: z.coerce.number().int().min(1).max(10_000).default(200),
 
+  // --- Email sign-in codes --------------------------------------------------
+
+  /**
+   * How the sign-in codes reach people.
+   *
+   * `console` prints the message to the server log: right for development and
+   * the test suite, which need no account. It is never used in production,
+   * where a code in a log is a code anybody with log access could use; there
+   * the code endpoints answer 503 until a real provider is set. `brevo` sends
+   * through Brevo's HTTPS API. Not SMTP: Render's free web services block
+   * outbound SMTP ports.
+   */
+  EMAIL_PROVIDER: z.enum(EMAIL_PROVIDERS).default('console'),
+
+  BREVO_API_KEY: optionalEnvString,
+
+  /** The "from" address. Brevo only sends from an address it has validated. */
+  EMAIL_FROM_ADDRESS: optionalEnvString.pipe(z.email().optional()),
+  EMAIL_FROM_NAME: z.string().trim().min(1).max(80).default('IntellMeet'),
+
+  /**
+   * Most emails the server asks its provider to send in 24 hours, for everyone.
+   *
+   * Brevo's free plan sends 300 a day and a code request is public, so without
+   * a ceiling a script could spend the whole day's allowance (and get the
+   * account suspended for spam). At the ceiling code requests answer 503 until
+   * the window passes; password sign-in and the demo are unaffected. A little
+   * under the plan's limit, so a few other emails still fit.
+   */
+  EMAIL_DAILY_LIMIT: z.coerce.number().int().min(1).max(100_000).default(250),
+
+  /** How long an emailed code stays valid. */
+  LOGIN_CODE_TTL_MIN: z.coerce.number().int().min(1).max(60).default(10),
+
+  /**
+   * How long before another code may be requested for the same address. The
+   * client counts it down; the server enforces it for everyone, whether or not
+   * the address has an account.
+   */
+  LOGIN_CODE_RESEND_SEC: z.coerce.number().int().min(5).max(600).default(60),
+
+  /**
+   * Wrong guesses a code survives. A six-digit code has a million values, so
+   * this is what makes guessing it pointless: five tries is a 1 in 200,000
+   * chance, and the next request replaces the code.
+   */
+  LOGIN_CODE_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
+
   // --- Rate limits for a crowd behind one address ---------------------------
   //
   // Reviewers on one college or office network share a public IP, and every
@@ -188,6 +239,12 @@ const envSchema = z.object({
    * is fixed: it is the one that must hold against a determined guesser.)
    */
   RATE_LIMIT_LOGIN_FAILURES_PER_15_MIN: z.coerce.number().int().min(1).max(1_000).default(5),
+
+  /**
+   * Sign-in codes requested per IP per 15 minutes. Each one sends an email, so
+   * this is the cost being bounded; a person asks for one or two.
+   */
+  RATE_LIMIT_CODE_REQUEST_PER_15_MIN: z.coerce.number().int().min(1).max(1_000).default(10),
 
   // --- Live meetings ----------------------------------------------------------
 
@@ -332,6 +389,12 @@ function providerKeyIssues(env: Env): string[] {
   }
   if (env.AI_PROVIDER === 'gemini' && !env.GEMINI_API_KEY) {
     issues.push('  - GEMINI_API_KEY: required when AI_PROVIDER=gemini');
+  }
+  if (env.EMAIL_PROVIDER === 'brevo') {
+    if (!env.BREVO_API_KEY) issues.push('  - BREVO_API_KEY: required when EMAIL_PROVIDER=brevo');
+    if (!env.EMAIL_FROM_ADDRESS) {
+      issues.push('  - EMAIL_FROM_ADDRESS: required when EMAIL_PROVIDER=brevo');
+    }
   }
   return issues;
 }
