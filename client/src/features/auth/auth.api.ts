@@ -1,10 +1,14 @@
 import { z } from 'zod';
 import {
   authResponseSchema,
+  loginCodeSentSchema,
   publicUserSchema,
   type AuthResponse,
+  type LoginCodeSent,
   type LoginInput,
   type RegisterInput,
+  type RequestLoginCodeInput,
+  type VerifyLoginCodeInput,
 } from '@intellmeet/shared';
 import { api, apiVoid } from '@/lib/apiClient';
 
@@ -23,6 +27,27 @@ export function login(input: LoginInput): Promise<AuthResponse> {
 
 export function register(input: RegisterInput): Promise<AuthResponse> {
   return api('/auth/register', authResponseSchema, { method: 'POST', body: input, ...noRetry });
+}
+
+/**
+ * Asks for a sign-in code by email, to sign in or to sign up.
+ *
+ * The answer is the same for every address: it says when the code expires and
+ * when another may be asked for, never whether the address has an account. What
+ * differs is the email, which tells an address with no account (or one that
+ * already has an account) what to do instead.
+ */
+export function requestLoginCode(input: RequestLoginCodeInput): Promise<LoginCodeSent> {
+  return api('/auth/code', loginCodeSentSchema, { method: 'POST', body: input, ...noRetry });
+}
+
+/** Spends the code from the email, creating the account first for a sign-up. */
+export function verifyLoginCode(input: VerifyLoginCodeInput): Promise<AuthResponse> {
+  return api('/auth/code/verify', authResponseSchema, {
+    method: 'POST',
+    body: input,
+    ...noRetry,
+  });
 }
 
 /**

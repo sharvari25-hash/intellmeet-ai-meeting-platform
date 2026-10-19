@@ -384,6 +384,64 @@ and `DELETE /api/auth/demo`, when a guest ends their own session.
 
 ---
 
+## Email sign-in codes
+
+Sign-up and sign-in by a six-digit code sent to the person's address. The
+password flow stays; the code flow is a second way to the same session
+(`startSession()`: the same access token, the same rotating refresh cookie).
+
+```
+/login  or  /register
+   │  POST /api/auth/code { purpose, email, name? }
+   │    limits ─► outcomeFor(address) ─► one email ─► 202, the same for every address
+   │         code        an account to sign in to, or an address to sign up
+   │         no-account  asked to sign in, none exists: "create one here"
+   │         has-account asked to sign up, one exists: "sign in here"
+   │         (nothing)   the seeded team-mates, guests, a demo account
+   ▼
+   │  POST /api/auth/code/verify { email, code }
+   │    findOneAndUpdate (live, attempts < max, $inc attempts) ─► HMAC compare
+   │    ─► conditional delete (spend) ─► accountFor(): create, or claim ─► startSession()
+```
+
+### Decisions
+
+| Decision | Why |
+| --- | --- |
+| **One document per address in MongoDB, not Redis** | Render's free Key Value keeps nothing on disk, so a restart would turn every code in flight into "invalid". A document per address (unique index) means requesting another code *replaces* the first: only the newest works, and an old email cannot be used after a new one. A TTL index removes what nobody entered; every query also filters on `expiresAt`, because the TTL monitor runs about once a minute. |
+| **An HMAC of the code, keyed with `JWT_SECRET` and bound to the address** | Six digits have a million values, so a plain SHA-256 of one is undone by trying them all. Keyed, a database dump alone cannot be used to recover a code or to carry one from one address to another. It is the layer behind the short life and the guess limit, not instead of them. |
+| **The guess counter is incremented by the query that finds the code** | Counting after the lookup would let a burst of parallel requests each read `attempts: 0` and each be evaluated. With `$inc` in the `findOneAndUpdate` and `attempts < max` in its filter, a code at its ceiling is never evaluated, whether or not the request that reached it has deleted it yet (a test sets that state directly; removing the filter fails it). |
+| **A correct code is spent by a conditional delete** | `deleteOne({ _id, codeHash })` and a check that it deleted one: of two simultaneous requests with the right code, one gets a session and the other a 401 (tested). |
+| **The response never depends on whether an account exists** | Every address gets `202 { expiresInSec, resendAfterSec }`. The *email* differs, so the person always learns what to do, and a stranger typing addresses into the form learns nothing. The cost is that an unknown address that asks to sign in is sent an email, bounded by the limits below. |
+| **The cooldown is a rate limiter, not a field on the code** | A cooldown read from the stored code would exist only for addresses that have one, and the difference in the answer (60 s left against a fresh 60) would tell a stranger which addresses those are. A limiter keyed on the address applies to every address alike. It counts only requests that worked (`skipFailedRequests`), so a failed send can be retried at once. |
+| **Limits in layers, and the order matters** | Per IP first (before parsing); then validation; then per address (1 per `LOGIN_CODE_RESEND_SEC`, 5 per 15 minutes); then the whole server's `EMAIL_DAILY_LIMIT` *last*, so malformed requests and repeats for one address are refused before they spend it. The daily ceiling answers **503**, not 429: the person did nothing wrong, the day's allowance (Brevo's free 300) is spent, and passwords and the demo still work. |
+| **Never for the seeded team-mates, the demo persona or guests** | Their addresses are made up (`@intellmeet.app`, `.invalid`). If anyone came to own that domain, a code would be a way into the shared demo accounts. `authProvider` must also be `local`. Checked again when the code is spent, because the account can change in between. |
+| **A code proves the address, so it takes over an unproven account** | `POST /api/auth/register` never verified the address. Someone could register `victim@example.com` with a password only they know and wait; if the victim then signed in with a code, they would land in an account the attacker could still enter. So the first proof of an address marks the account verified (`emailVerifiedAt`) and removes its password and every session. The account and its data stay. A person who made a password account with their own address loses the password the first time they use a code, which is the price of not being able to tell them from the attacker. |
+| **Brevo over HTTPS, not SMTP** | Render's free web services block outbound SMTP ports since 26 September 2025, so a mail library would time out in production and work on a laptop. The provider interface (`lib/email`, like `lib/ai`) has `console` for development and tests and `brevo` for production. |
+| **`console` is refused in production** | It prints the code to the log. In production that would deliver nothing and write every sign-in code where anyone with log access can read it, so the endpoints answer 503 with a plain message until a real provider is set. |
+| **The code is not in the subject line** | A subject shows on a lock screen and in a notification. |
+| **Nothing user-supplied in any email** | No name, no address in the body: nothing to escape. The variables are digits, a number of minutes and two URLs built from `CLIENT_URL`. |
+
+### Not covered
+
+- **Mail deliverability is not tested.** The suite stubs the provider and the
+  Brevo request; whether a message reaches an inbox (and not spam) depends on
+  the sender address Brevo has validated, and has to be checked live.
+- **The daily ceiling can be spent by a determined caller** with many
+  addresses and many networks (each IP is limited to 10 requests per 15
+  minutes). The effect is that code sign-in answers 503 until the window ends;
+  nothing else stops. That is a limit of a free plan, not something closed here.
+- **No end-to-end test** of the whole flow in a browser: it needs the code from
+  a mailbox, and the suite has none. The screens are covered by component
+  tests and the axe pass; the API by supertest.
+- **`POST /api/auth/register` still exists** (165 places in the test suite
+  create their users with it). No screen uses it. It is the only way left to
+  make an account with an unproven address, so retiring it, once the tests
+  create users another way, would stop new ones appearing; the takeover rule
+  would still be needed for the ones that exist.
+
+---
+
 ## The housekeeping sweep
 
 Small jobs that keep shared state honest run inside the web process

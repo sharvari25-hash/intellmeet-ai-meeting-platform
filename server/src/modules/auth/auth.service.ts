@@ -86,7 +86,10 @@ function pushTokenOps(userId: unknown, refresh: IssuedRefreshToken, context: Ses
  * operators rather than by mutating a loaded document - which would write back
  * an empty array and log every session out.
  */
-async function startSession(user: UserDocument, context: SessionContext): Promise<AuthResult> {
+export async function startSession(
+  user: UserDocument,
+  context: SessionContext,
+): Promise<AuthResult> {
   const refresh = issueRefreshToken();
 
   await User.bulkWrite(pushTokenOps(user._id, refresh, context) as never);

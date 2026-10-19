@@ -1,9 +1,19 @@
 import { Router } from 'express';
-import { loginSchema, registerSchema } from '@intellmeet/shared';
+import {
+  loginSchema,
+  registerSchema,
+  requestLoginCodeSchema,
+  verifyLoginCodeSchema,
+} from '@intellmeet/shared';
 import {
   accountLoginLimiter,
   authLimiter,
+  codeCooldownLimiter,
+  codeEmailLimiter,
+  codeRequestLimiter,
+  codeVerifyLimiter,
   demoLimiter,
+  emailDailyLimiter,
   loginLimiter,
   refreshLimiter,
 } from '../../middleware/rateLimit.js';
@@ -36,6 +46,29 @@ authRouter.post(
   accountLoginLimiter,
   validate({ body: loginSchema }),
   controller.login,
+);
+
+// Sign in or sign up with an emailed code. Asking for a code can cost an email,
+// so the limits come in layers: the caller's address first (before parsing),
+// then validation, then the limits that need the address in the body - one
+// code a minute and five a quarter-hour per address, then the whole server's
+// daily ceiling last, so malformed requests and repeats never spend it.
+authRouter.post(
+  '/code',
+  codeRequestLimiter,
+  validate({ body: requestLoginCodeSchema }),
+  codeCooldownLimiter,
+  codeEmailLimiter,
+  emailDailyLimiter,
+  controller.requestCode,
+);
+// Spends the code. No hashing, so cheap; bounded by the code's own attempt
+// counter, and per caller and address here.
+authRouter.post(
+  '/code/verify',
+  codeVerifyLimiter,
+  validate({ body: verifyLoginCodeSchema }),
+  controller.verifyCode,
 );
 
 // Creates a guest per call. Its own per-IP budget, sized for a room of

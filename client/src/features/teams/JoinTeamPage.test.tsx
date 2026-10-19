@@ -16,7 +16,10 @@ const team = {
   createdAt: new Date().toISOString(),
 };
 
-/** Signed out to begin with; every auth call succeeds; records the URLs hit. */
+/**
+ * Signed out to begin with; every auth call succeeds (asking for a code, and
+ * spending it, included); records the URLs hit.
+ */
 function stubApi(): string[] {
   const calls: string[] = [];
 
@@ -31,7 +34,14 @@ function stubApi(): string[] {
           headers: { 'content-type': 'application/json' },
         });
       }
-      if (url === '/api/auth/login' || url === '/api/auth/register') {
+      if (url === '/api/auth/code') {
+        return Response.json({ expiresInSec: 600, resendAfterSec: 60 }, { status: 202 });
+      }
+      if (
+        url === '/api/auth/login' ||
+        url === '/api/auth/register' ||
+        url === '/api/auth/code/verify'
+      ) {
         return Response.json(authPayload());
       }
       if (url === '/api/teams/join') return Response.json({ team });
@@ -61,11 +71,12 @@ describe('invite links', () => {
     await waitFor(() => expect(calls).toContain('/api/teams/join'));
   });
 
-  it('completes the join after signing in from the invite screen', async () => {
+  it('completes the join after signing in with a password from the invite screen', async () => {
     const calls = stubApi();
     const { user } = renderWithProviders(<App />, { route: '/join/ABC234' });
 
     await user.click(await screen.findByRole('link', { name: 'Sign in' }));
+    await user.click(await screen.findByRole('button', { name: 'Use a password instead' }));
 
     await user.type(await screen.findByLabelText('Email'), 'ada@example.com');
     await user.type(screen.getByLabelText('Password'), 'Correct-horse-1');
@@ -76,6 +87,22 @@ describe('invite links', () => {
     await waitFor(() => expect(calls).toContain('/api/teams/join'));
   });
 
+  it('completes the join after signing in with an emailed code from the invite screen', async () => {
+    const calls = stubApi();
+    const { user } = renderWithProviders(<App />, { route: '/join/ABC234' });
+
+    await user.click(await screen.findByRole('link', { name: 'Sign in' }));
+
+    await user.type(await screen.findByLabelText('Email'), 'ada@example.com');
+    await user.click(screen.getByRole('button', { name: 'Email me a code' }));
+    await user.type(await screen.findByLabelText('6-digit code'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Verify and continue' }));
+
+    // The same guard, reached by the other way in.
+    await waitFor(() => expect(calls).toContain('/api/teams/join'));
+    expect(calls).toContain('/api/auth/code/verify');
+  });
+
   it('completes the join after creating an account from the invite screen', async () => {
     const calls = stubApi();
     const { user } = renderWithProviders(<App />, { route: '/join/ABC234' });
@@ -84,8 +111,9 @@ describe('invite links', () => {
 
     await user.type(await screen.findByLabelText('Full name'), 'Ada Lovelace');
     await user.type(screen.getByLabelText('Email'), 'ada@example.com');
-    await user.type(screen.getByLabelText('Password'), 'Correct-horse-1');
-    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    await user.click(screen.getByRole('button', { name: 'Email me a code' }));
+    await user.type(await screen.findByLabelText('6-digit code'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Verify and continue' }));
 
     await waitFor(() => expect(calls).toContain('/api/teams/join'));
   });
@@ -105,8 +133,9 @@ describe('invite links', () => {
     const { user } = renderWithProviders(<App />, { route: '/register' });
     await user.type(await screen.findByLabelText('Full name'), 'Ada Lovelace');
     await user.type(screen.getByLabelText('Email'), 'ada@example.com');
-    await user.type(screen.getByLabelText('Password'), 'Correct-horse-1');
-    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    await user.click(screen.getByRole('button', { name: 'Email me a code' }));
+    await user.type(await screen.findByLabelText('6-digit code'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Verify and continue' }));
 
     await waitFor(() => expect(calls).toContain('/api/teams/join'));
   });

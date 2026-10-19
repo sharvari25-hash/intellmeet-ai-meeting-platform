@@ -67,6 +67,7 @@ flowchart LR
 | **Cloudinary** | Free (25 credits a month) | Meeting recordings: the host's browser uploads directly (signed), the worker downloads them | Cloudinary console + three Render variables |
 | **Google Gemini** | Free tier | Transcription and analysis, `gemini-3.5-flash` falling back through 3.6, 3.7 and 3.8 Flash | A key in its own Google project, on Render |
 | **Metered** | Free plan | TURN relay for calls on restrictive networks (mobile data, college and office firewalls) | Metered dashboard + three Render variables |
+| **Brevo** | Free (300 emails a day) | Sends the sign-in codes, over its HTTPS API | Brevo console (a validated sender, an API key) + `render.yaml` + two Render secrets. See [Email sign-in codes](#email-sign-in-codes) |
 | **cron-job.org** | Free | Keeps the free web service awake | cron-job.org job "IntellMeet keep-alive" |
 
 Nothing here needs a card, and nothing bills past its free allowance: each
@@ -111,6 +112,10 @@ Set by `render.yaml` (changed by editing the file, see
 | `TURN_URLS` | the four `global.relay.metered.ca` URLs (UDP and TCP on 80, UDP on 443, TLS on 443) | unset | no |
 | `TURN_USERNAME` | **set in the dashboard** | unset | **yes** (see [TURN credentials](#turn-credentials-are-visible-to-signed-in-users)) |
 | `TURN_CREDENTIAL` | **set in the dashboard** | unset | **yes** |
+| `EMAIL_PROVIDER` | `brevo` | `console` (refused in production) | no |
+| `BREVO_API_KEY` | **set in the dashboard** | required when `EMAIL_PROVIDER=brevo` | **yes** |
+| `EMAIL_FROM_ADDRESS` | **set in the dashboard**: an address Brevo has validated as a sender | required when `EMAIL_PROVIDER=brevo` | no (it is on every email) |
+| `EMAIL_DAILY_LIMIT` | `250` | `250` | no |
 
 Not set on Render, so the code default applies (all documented in
 `server/.env.example`; the tuning ones are in the README's "Demo-day
@@ -127,6 +132,8 @@ tuning" table):
 | `DEMO_DATA_TTL_HOURS` | 6 | `AI_JOB_ATTEMPTS` / `AI_JOB_BACKOFF_MS` | 3 / 10000 |
 | `DEMO_CLEANUP_INTERVAL_MIN` | 30 | `RECORDINGS_DIR` / `MAX_RECORDING_MB` | `.data/recordings` / 50 (unused with Cloudinary) |
 | `DEMO_MAX_GUESTS` | 200 | `FFMPEG_PATH` | the bundled ffmpeg |
+| `LOGIN_CODE_TTL_MIN` | 10 | `LOGIN_CODE_RESEND_SEC` / `LOGIN_CODE_MAX_ATTEMPTS` | 60 / 5 |
+| `RATE_LIMIT_CODE_REQUEST_PER_15_MIN` | 10 | `EMAIL_FROM_NAME` | `IntellMeet` |
 
 `GROQ_API_KEY`, `GROQ_TRANSCRIBE_MODEL` and `GROQ_CHAT_MODEL` are not used in
 production (Groq is supported but not selected).
@@ -201,6 +208,102 @@ That is the only one. `VITE_SENTRY_DSN` arrives with Phase 13.
    it carries on (the only effect is that cached analytics expire within 5
    minutes). It is idempotent: running it again updates in place.
 10. **Keep-alive** on cron-job.org (see [Keep-alive](#keep-alive)).
+11. **Brevo**, for the sign-in codes (below). Done after the rest, when the
+    email sign-in was added.
+
+---
+
+## Email sign-in codes
+
+Signing up and signing in with a six-digit code needs something to send the
+email. It has to be an **HTTPS API, not SMTP**: Render's free web services have
+blocked outbound traffic to the SMTP ports (25, 465, 587) since 26 September
+2025 ([Render's changelog](https://render.com/changelog/free-web-services-will-no-longer-allow-outbound-traffic-to-smtp-ports)),
+so a mail library would time out in production and work on a laptop. Brevo's
+free plan (300 emails a day) has a transactional API; `EMAIL_PROVIDER=brevo`
+uses it. Until it is set up the server answers the code endpoints with 503
+("Signing in with an email code is not available right now") and everything
+else works: it never falls back to printing codes in the log.
+
+### Setting it up
+
+Every secret is entered by its owner in the dashboard it belongs to: never in
+chat, a file in the repository or a shell history.
+
+1. **An account** at [brevo.com](https://www.brevo.com), free plan.
+2. **A sender.** In Brevo: **Settings → Senders, Domains, IPs → Senders → Add a
+   sender**, with a from name and the address the codes will come from. For an
+   address whose domain is not authenticated, Brevo emails it a **6-digit
+   code**; enter it under **Verify sender**
+   ([Brevo: create a sender](https://help.brevo.com/hc/en-us/articles/208836149)).
+   The sender counts only once verified (`active` in the API). Menu names
+   change; what is needed is *one verified sender*.
+3. **An API key.** **Settings → SMTP & API → API keys** (direct link:
+   `app.brevo.com/settings/keys/api`) → **Generate a new API key**: a name, an
+   expiry if wanted, and an **API key, not an SMTP key**. It is shown once. It
+   goes only into Render (and a private `server/.env` for a local test).
+4. **Render, before the deploy that needs it.** `render.yaml` selects
+   `EMAIL_PROVIDER=brevo`, and the server **refuses to start** with it and
+   either value empty (`[env] Invalid environment configuration`). So on
+   `intellmeet-api` → **Environment**, set **`BREVO_API_KEY`** (the key) and
+   **`EMAIL_FROM_ADDRESS`** (the confirmed sender), then **Save**, and only then
+   merge the change. (Render may also ask for them when it syncs the Blueprint;
+   if the deploy starts without them it fails and the old one keeps running:
+   fill them in and **Save and deploy**.)
+5. **Check the pair without sending anything**, in PowerShell. The key is typed
+   at a hidden prompt, so it is never on the screen or in the history:
+
+   ```powershell
+   $key = Read-Host 'Brevo API key' -AsSecureString
+   $headers = @{ 'api-key' = [System.Net.NetworkCredential]::new('', $key).Password; accept = 'application/json' }
+   (Invoke-RestMethod https://api.brevo.com/v3/account -Headers $headers).plan   # a 4xx names the problem
+   (Invoke-RestMethod https://api.brevo.com/v3/senders -Headers $headers).senders | Select-Object email, active
+   Remove-Variable key, headers
+   ```
+
+   The first call accepts or refuses the key; the second lists the senders:
+   `EMAIL_FROM_ADDRESS` must be there with `active` true.
+6. **Try it live** with a mailbox you own: sign up on the production site, find
+   the email (and the spam folder), enter the code, sign out, sign in with a
+   code again. Brevo → **Transactional** → **Logs** shows each message and what
+   became of it.
+
+### What is not known until it runs
+
+- **Whether the emails reach the inbox, and from which address.** The suite
+  stubs the provider. One verified address works without a domain of your own
+  (step 2), but Brevo says addresses on free mailbox providers (`gmail.com`,
+  `yahoo.com`) **cannot be domain-authenticated**, that domain authentication
+  has been mandatory since 1 February 2024 (Gmail's and Yahoo's sender rules),
+  and that until a domain is authenticated it may **replace the domain part of
+  the from address with `@brevosend.com`** to keep delivering
+  ([Brevo: authenticate your domain](https://help.brevo.com/hc/en-us/articles/12163873383186)).
+  So codes may arrive from a `brevosend.com` address, or land in spam. Whether
+  that rewrite applies to API sends was not confirmed. A domain you own,
+  authenticated with the DNS records Brevo gives you, is the reliable setup.
+  The screen tells people to check their spam folder.
+
+### What it costs, and the limits
+
+- **300 emails a day** on the free plan. `EMAIL_DAILY_LIMIT` (250) stops the
+  server asking for more: at the ceiling the code endpoints answer 503
+  ("Signing in with an email code is busy right now") for the rest of a 24-hour
+  window that starts at the first request, not at Brevo's day boundary.
+  Passwords and the demo carry on. The count lives in Key Value, which keeps
+  nothing on disk: a restart zeroes it, and Brevo itself then refuses past 300
+  (the person sees "We couldn't send the email").
+- **Per address:** one email a minute and five per 15 minutes, whoever asks,
+  whether or not the address has an account. **Per IP:** 10 code requests per
+  15 minutes (`RATE_LIMIT_CODE_REQUEST_PER_15_MIN`).
+- **A determined caller can spend the day's allowance** with many addresses
+  from many networks. The effect is the 503 above until the window ends; it
+  cannot read or change anything.
+- **`docker-compose.prod.yml` and Kubernetes** run `NODE_ENV=production`, so the
+  code endpoints answer 503 there unless `EMAIL_PROVIDER=brevo` and its two
+  values are set (the chart's values do not list them). Passwords and the demo
+  are unaffected.
+- **Locally**, `EMAIL_PROVIDER=console` (the default) prints each email, the
+  code included, in the terminal running `npm run dev`.
 
 ---
 
@@ -305,6 +408,7 @@ out of the request log so the pings do not bury real traffic.
 | Metered TURN | **500 MB a month**, the conservative figure: the pricing page says "Free Trial 500 MB", while the TURN dashboard shows "0 GB / 50 GB used" | The relay stops, **with no charge** (auto-reload is off); calls that need a relay fail, direct calls are unaffected | Only relayed calls use it. A relayed two-person video call moves an estimated 20-45 MB a minute (two streams of about 1.5 Mbps, counted once or in both directions), so 500 MB is roughly 10-25 minutes of relayed video: keep phone-on-mobile-data tests short |
 | Vercel Hobby | Bandwidth and build allowances on the usage page | Deployments pause | A static site of about 155 kB gzipped on first load; nowhere near |
 | cron-job.org | Free | - | One job every 10 minutes |
+| Brevo | 300 emails a day | Sending is refused (HTTP 4xx); the person sees "We couldn't send the email" | `EMAIL_DAILY_LIMIT=250` stops requests first with a 503; one email a minute and five per 15 minutes per address; see [Email sign-in codes](#email-sign-in-codes) |
 
 ---
 
@@ -421,6 +525,12 @@ usage graph shows traffic nobody made, rotate the credential.
 | A room link opens "You're not in this meeting's team", "No meeting has that code" or "This meeting has ended" (before the join fix, all three said "That meeting is not available") | Three different causes; see [A room link does not open](#a-room-link-does-not-open) below. |
 | 503 "Demo mode is not available: the demo workspace has not been seeded" | Run the seed (step 9). |
 | 503 "The demo is busy right now" | `DEMO_MAX_GUESTS` guests exist. The sweep removes guests idle for 6 hours; raise the ceiling on Render if needed. |
+| A deploy never goes live; the log says `BREVO_API_KEY: required when EMAIL_PROVIDER=brevo` (or `EMAIL_FROM_ADDRESS`) | The two values were not set before the deploy that selects Brevo. Set them under **Environment**, then **Save and deploy**. The old deploy keeps running meanwhile. |
+| 503 "Signing in with an email code is not available right now" | `EMAIL_PROVIDER` is `console` in production (never used there): set it to `brevo` with its two values. |
+| 503 "Signing in with an email code is busy right now" | `EMAIL_DAILY_LIMIT` emails were sent in the last 24 hours. It clears by itself; passwords and the demo still work. |
+| 503 "We couldn't send the email" | Brevo refused it. The log line `[auth] sign-in email was not sent` has Brevo's reason: `api-key not found` (a wrong or revoked key), an unvalidated or unknown sender (check **Senders**, and the PowerShell check above), or a daily quota spent (300). |
+| People say the code never arrives | Spam folder first; then Brevo → **Transactional** → **Logs** for what became of the message. An address with no account that asked to *sign in* gets an email saying so, and one that has an account and asked to *sign up* gets one saying to sign in: neither contains a code. |
+| 429 "Please wait a moment before asking for another code" | The one-a-minute limit per address. The button counts it down; a script ignoring it gets this. |
 | Stopping a recording shows "Cloudinary rejected the upload (HTTP 401)" | Cloudinary refused the key Render signs with; see [Recording upload refused (HTTP 401)](#recording-upload-refused-http-401) below. Open on production since the Phase 12 smoke test. |
 | The meeting page shows the AI failed with HTTP 429 | Gemini's daily quota is spent on all four models. Retry after midnight Pacific. Check usage at <https://aistudio.google.com/rate-limit>. |
 | ... with HTTP 503 | Gemini is overloaded. The chain already tried every model; press Retry in a few minutes. |

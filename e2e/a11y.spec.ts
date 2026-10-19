@@ -90,14 +90,43 @@ for (const theme of ['light', 'dark'] as const) {
     });
 
     test('the public pages', async ({ page }) => {
+      // Asking for a code is answered here rather than by the API: the page
+      // after it is what is being checked, and the real answer depends on a
+      // mail provider and spends the day's sign-in emails.
+      await page.route('**/api/auth/code', (route) =>
+        route.fulfill({ status: 202, json: { expiresInSec: 600, resendAfterSec: 60 } }),
+      );
+
       await page.goto('/');
       await audit(page, 'landing', theme);
 
       await page.goto('/login');
       await audit(page, 'sign in', theme);
 
+      await page.getByRole('button', { name: 'Use a password instead' }).click();
+      await expect(page.getByLabel('Password')).toBeVisible();
+      await audit(page, 'sign in with a password', theme);
+
+      await page.getByRole('button', { name: 'Email me a code instead' }).click();
+      await page.getByLabel('Email').fill('ada@example.com');
+      await page.getByRole('button', { name: 'Email me a code' }).click();
+      await expect(page.getByLabel('6-digit code')).toBeFocused();
+      await audit(page, 'sign in, code requested', theme);
+
       await page.goto('/register');
       await audit(page, 'sign up', theme);
+
+      await page.getByLabel('Full name').fill('A');
+      await page.getByLabel('Email').fill('nope');
+      await page.getByRole('button', { name: 'Email me a code' }).click();
+      await expect(page.getByText('Name must be at least 2 characters')).toBeVisible();
+      await audit(page, 'sign up, with errors', theme);
+
+      await page.getByLabel('Full name').fill('Ada Lovelace');
+      await page.getByLabel('Email').fill('ada@example.com');
+      await page.getByRole('button', { name: 'Email me a code' }).click();
+      await expect(page.getByLabel('6-digit code')).toBeFocused();
+      await audit(page, 'sign up, code requested', theme);
 
       await page.goto('/join/ABC234');
       await audit(page, 'invite link', theme);

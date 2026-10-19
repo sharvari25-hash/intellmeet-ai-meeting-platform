@@ -59,6 +59,19 @@ const userSchema = new Schema(
     // `select: false`, so an accidental `User.findById(...)` followed by
     // `res.json(user)` cannot leak the hash - it has to be asked for by name.
     passwordHash: { type: String, select: false },
+
+    /**
+     * When somebody proved they can read this address, by entering the code
+     * sent to it. Accounts made with a code have it from the start; ones made
+     * with a password (`POST /api/auth/register`) do not, and nothing has
+     * checked their address.
+     *
+     * That gap is what a code sign-in closes. Anyone can register an address
+     * they do not own, with a password they know, and wait for its owner to
+     * sign up; so the first time the owner proves the address with a code, the
+     * unverified account's password and sessions are removed (auth.codes.ts).
+     */
+    emailVerifiedAt: { type: Date },
     avatarUrl: { type: String, default: null },
     role: { type: String, enum: USER_ROLES, default: 'member' },
     authProvider: { type: String, enum: AUTH_PROVIDERS, default: 'local' },

@@ -2,6 +2,7 @@ import type { Request, RequestHandler, Response } from 'express';
 import { REFRESH_COOKIE_NAME } from '@intellmeet/shared';
 import { clientIp } from '../../lib/clientIp.js';
 import { currentUser } from '../../middleware/requireAuth.js';
+import * as authCodes from './auth.codes.js';
 import * as authService from './auth.service.js';
 import { clearRefreshCookie, setRefreshCookie } from './auth.tokens.js';
 
@@ -34,6 +35,16 @@ export const register: RequestHandler = async (req, res) => {
 
 export const login: RequestHandler = async (req, res) => {
   sendAuthResult(res, await authService.login(req.body, sessionContext(req)));
+};
+
+export const requestCode: RequestHandler = async (req, res) => {
+  // 202, not 201: nothing has been created, and for an address with nothing to
+  // send a code to, nothing may have been sent either. The same answer for all.
+  res.status(202).json(await authCodes.requestCode(req.body));
+};
+
+export const verifyCode: RequestHandler = async (req, res) => {
+  sendAuthResult(res, await authCodes.verifyCode(req.body, sessionContext(req)));
 };
 
 export const demoLogin: RequestHandler = async (req, res) => {
