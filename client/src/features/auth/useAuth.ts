@@ -1,6 +1,13 @@
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
-import type { AuthResponse, LoginInput, RegisterInput } from '@intellmeet/shared';
+import type {
+  AuthResponse,
+  LoginCodeSent,
+  LoginInput,
+  RegisterInput,
+  RequestLoginCodeInput,
+  VerifyLoginCodeInput,
+} from '@intellmeet/shared';
 import { peekPendingInvite } from '@/features/teams/pendingInvite';
 import { useAuthStore } from '@/stores/authStore';
 import { useSocketStore } from '@/stores/socketStore';
@@ -36,6 +43,21 @@ export function useLogin(): UseMutationResult<AuthResponse, Error, LoginInput> {
 export function useRegister(): UseMutationResult<AuthResponse, Error, RegisterInput> {
   const onSignedIn = useOnSignedIn();
   return useMutation({ mutationFn: authApi.register, onSuccess: onSignedIn });
+}
+
+/** Emails a code. Signs nobody in: that is `useVerifyLoginCode`. */
+export function useRequestLoginCode(): UseMutationResult<
+  LoginCodeSent,
+  Error,
+  RequestLoginCodeInput
+> {
+  return useMutation({ mutationFn: authApi.requestLoginCode });
+}
+
+/** Spends the emailed code: signs in, or creates the account and signs in. */
+export function useVerifyLoginCode(): UseMutationResult<AuthResponse, Error, VerifyLoginCodeInput> {
+  const onSignedIn = useOnSignedIn();
+  return useMutation({ mutationFn: authApi.verifyLoginCode, onSuccess: onSignedIn });
 }
 
 export function useDemoLogin(): UseMutationResult<AuthResponse, Error, void> {

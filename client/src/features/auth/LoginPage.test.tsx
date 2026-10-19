@@ -11,21 +11,75 @@ function stubFetch(handler: (url: string, init?: RequestInit) => Response) {
   return mock;
 }
 
+/** The emailed code is what opens; the password form is one link away. */
+async function openPasswordForm(user: ReturnType<typeof renderWithProviders>['user']) {
+  await user.click(screen.getByRole('button', { name: 'Use a password instead' }));
+}
+
 describe('<LoginPage />', () => {
-  it('renders the sign-in form and the demo shortcut', () => {
+  it('opens on the emailed code, with the password and the demo within reach', () => {
     stubFetch(() => Response.json(authPayload()));
     renderWithProviders(<LoginPage />);
 
     expect(screen.getByRole('heading', { level: 1, name: 'Welcome back' })).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Email me a code' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use a password instead' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /try the live demo/i })).toBeInTheDocument();
+  });
+
+  it('emails a code and asks for it', async () => {
+    const fetchMock = stubFetch((url) =>
+      url === '/api/auth/code'
+        ? Response.json({ expiresInSec: 600, resendAfterSec: 60 }, { status: 202 })
+        : Response.json(authPayload()),
+    );
+    const { user } = renderWithProviders(<LoginPage />);
+
+    await user.type(screen.getByLabelText('Email'), 'ada@example.com');
+    await user.click(screen.getByRole('button', { name: 'Email me a code' }));
+
+    expect(await screen.findByLabelText('6-digit code')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/auth/code',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('checks the address before asking for a code', async () => {
+    const fetchMock = stubFetch(() => Response.json(authPayload()));
+    const { user } = renderWithProviders(<LoginPage />);
+
+    await user.type(screen.getByLabelText('Email'), 'not-an-email');
+    await user.click(screen.getByRole('button', { name: 'Email me a code' }));
+
+    expect(await screen.findByText('Must be a valid email address')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('switches to the password form, and back', async () => {
+    stubFetch(() => Response.json(authPayload()));
+    const { user } = renderWithProviders(<LoginPage />);
+
+    await openPasswordForm(user);
+
+    expect(screen.getByLabelText('Email')).toBeInTheDocument();
+    // One thing is labelled "Password": the field.
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /try the live demo/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Email me a code' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Email me a code instead' }));
+
+    expect(screen.getByRole('button', { name: 'Email me a code' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
   });
 
   it('validates against the shared schema before calling the API', async () => {
     const fetchMock = stubFetch(() => Response.json(authPayload()));
     const { user } = renderWithProviders(<LoginPage />);
+    await openPasswordForm(user);
 
     await user.type(screen.getByLabelText('Email'), 'not-an-email');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -40,6 +94,7 @@ describe('<LoginPage />', () => {
   it('marks the invalid field for assistive technology, not just visually', async () => {
     stubFetch(() => Response.json(authPayload()));
     const { user } = renderWithProviders(<LoginPage />);
+    await openPasswordForm(user);
 
     await user.type(screen.getByLabelText('Email'), 'nope');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -52,6 +107,7 @@ describe('<LoginPage />', () => {
   it('signs in and stores the session in memory', async () => {
     const fetchMock = stubFetch(() => Response.json(authPayload()));
     const { user } = renderWithProviders(<LoginPage />);
+    await openPasswordForm(user);
 
     await user.type(screen.getByLabelText('Email'), 'ada@example.com');
     await user.type(screen.getByLabelText('Password'), 'Correct-horse-1');
@@ -75,6 +131,7 @@ describe('<LoginPage />', () => {
     );
 
     const { user } = renderWithProviders(<LoginPage />);
+    await openPasswordForm(user);
 
     await user.type(screen.getByLabelText('Email'), 'ada@example.com');
     await user.type(screen.getByLabelText('Password'), 'Wrong-password-1');
@@ -97,6 +154,7 @@ describe('<LoginPage />', () => {
     );
 
     const { user } = renderWithProviders(<LoginPage />);
+    await openPasswordForm(user);
 
     await user.type(screen.getByLabelText('Email'), 'ada@example.com');
     await user.type(screen.getByLabelText('Password'), 'Correct-horse-1');
