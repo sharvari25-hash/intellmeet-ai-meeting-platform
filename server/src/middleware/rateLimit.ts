@@ -83,6 +83,14 @@ interface LimiterOptions {
   keyGenerator?: (req: Request) => string;
   /** Count only requests that fail (status >= 400). */
   skipSuccessfulRequests?: boolean;
+  /** Count only requests that succeed: a request that failed has not used the budget. */
+  skipFailedRequests?: boolean;
+  /**
+   * Refuse with 503 instead of 429. For a ceiling on something shared by
+   * everyone, where "you are going too fast" would be untrue: the person did
+   * nothing wrong, the service has simply run out for now.
+   */
+  unavailable?: boolean;
 }
 
 function buildLimiter({
@@ -92,11 +100,14 @@ function buildLimiter({
   message,
   keyGenerator,
   skipSuccessfulRequests = false,
+  skipFailedRequests = false,
+  unavailable = false,
 }: LimiterOptions): RequestHandler {
   return rateLimit({
     windowMs,
     limit: typeof limit === 'number' ? limit : () => limit(),
     skipSuccessfulRequests,
+    skipFailedRequests,
     // Draft-7 `RateLimit` headers; the legacy `X-RateLimit-*` set is off.
     standardHeaders: 'draft-7',
     legacyHeaders: false,
@@ -105,7 +116,7 @@ function buildLimiter({
     // Route the rejection through the central error handler so a 429 has the
     // same `{ error: { code, message, requestId } }` body as everything else.
     handler: (_req, _res, next) => {
-      next(AppError.tooManyRequests(message));
+      next(unavailable ? AppError.unavailable(message) : AppError.tooManyRequests(message));
     },
   });
 }
@@ -207,6 +218,99 @@ export const authLimiter = createLimiter({
   windowMs: FIFTEEN_MINUTES,
   limit: () => env.RATE_LIMIT_AUTH_PER_15_MIN,
   message: 'Too many requests. Please try again shortly.',
+});
+
+/**
+ * Requests for a sign-in code, per IP (`RATE_LIMIT_CODE_REQUEST_PER_15_MIN`,
+ * default 10).
+ *
+ * Every request that gets past it can cost an email, and a script can ask for
+ * a code for any address. Counted before validation, so malformed requests
+ * from one source are bounded too.
+ */
+export const codeRequestLimiter = createLimiter({
+  prefix: 'code-ip',
+  windowMs: FIFTEEN_MINUTES,
+  limit: () => env.RATE_LIMIT_CODE_REQUEST_PER_15_MIN,
+  message: 'Too many code requests. Please try again in a few minutes.',
+});
+
+/**
+ * One code per address per `LOGIN_CODE_RESEND_SEC` (default a minute).
+ *
+ * Keyed on the address alone and applied to every address, whether or not it
+ * has an account, so it answers the same for both. (A cooldown kept on the
+ * stored code would apply only to addresses that have one, and the difference
+ * would tell a stranger which addresses those are.) Only a request that
+ * worked uses it up: if the email could not be sent, trying again at once is
+ * the right thing to do. The client counts the wait down; this is what holds
+ * it for a client that does not.
+ */
+export const codeCooldownLimiter = createLimiter({
+  prefix: 'code-cooldown',
+  windowMs: env.LOGIN_CODE_RESEND_SEC * 1000,
+  limit: 1,
+  skipFailedRequests: true,
+  message: 'Please wait a moment before asking for another code.',
+  keyGenerator: (req) => `email:${loginEmail(req)}`,
+});
+
+/**
+ * Codes (and notes about an account) emailed to one address per 15 minutes,
+ * from everywhere at once.
+ *
+ * What stops the form being used to fill somebody's inbox: five emails, then
+ * nothing for a quarter of an hour, whatever addresses the requests come from.
+ * Like the cooldown it ignores whether the address has an account.
+ */
+export const CODE_EMAILS_PER_ADDRESS_PER_15_MIN = 5;
+
+export const codeEmailLimiter = createLimiter({
+  prefix: 'code-email',
+  windowMs: FIFTEEN_MINUTES,
+  limit: CODE_EMAILS_PER_ADDRESS_PER_15_MIN,
+  skipFailedRequests: true,
+  message: 'Too many codes have been requested for this email. Please try again in 15 minutes.',
+  keyGenerator: (req) => `email:${loginEmail(req)}`,
+});
+
+/**
+ * Emails the server sends in 24 hours, for everyone (`EMAIL_DAILY_LIMIT`,
+ * default 250).
+ *
+ * Brevo's free plan sends 300 a day; running past it, or being used to send
+ * spam, risks the account. At the ceiling code requests answer 503 until the
+ * window has passed, and everything else (passwords, the demo) carries on.
+ * Placed after validation and the per-address limits, so malformed requests
+ * and repeats for one address do not spend it. A determined caller using many
+ * addresses and many networks still can: that is a known limit of a free plan
+ * (docs/deployment.md), not something this closes.
+ */
+export const emailDailyLimiter = createLimiter({
+  prefix: 'email-daily',
+  windowMs: 24 * 60 * 60 * 1000,
+  limit: () => env.EMAIL_DAILY_LIMIT,
+  skipFailedRequests: true,
+  unavailable: true,
+  message:
+    'Signing in with an email code is busy right now. Try again later, or use your password or the demo.',
+  keyGenerator: () => 'global',
+});
+
+/**
+ * Wrong codes per IP *and* address per 15 minutes (ten).
+ *
+ * The code's own attempt counter is what stops guessing it; this stops one
+ * source working through addresses, and the many requests that find no code at
+ * all (which would otherwise cost a database read each).
+ */
+export const codeVerifyLimiter = createLimiter({
+  prefix: 'code-verify',
+  windowMs: FIFTEEN_MINUTES,
+  limit: 10,
+  skipSuccessfulRequests: true,
+  message: 'Too many incorrect codes. Please try again in 15 minutes.',
+  keyGenerator: (req) => `${ipBucket(req)}|${loginEmail(req)}`,
 });
 
 /**
