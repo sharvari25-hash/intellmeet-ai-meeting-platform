@@ -95,6 +95,22 @@ services:
       - key: BCRYPT_COST
         value: '10'
 
+      # --- Email: the sign-in codes (Brevo) -----------------------------------
+      # HTTPS API, not SMTP: free web services cannot reach the SMTP ports. The
+      # server refuses to start with brevo selected and either secret empty, so
+      # set both in the dashboard BEFORE the deploy that adds them
+      # (docs/deployment.md, "Email sign-in codes"). The address must be one
+      # Brevo has validated as a sender.
+      - key: EMAIL_PROVIDER
+        value: brevo
+      - key: BREVO_API_KEY
+        sync: false
+      - key: EMAIL_FROM_ADDRESS
+        sync: false
+      # Brevo's free plan sends 300 a day; this leaves headroom.
+      - key: EMAIL_DAILY_LIMIT
+        value: '250'
+
       # --- AI: Gemini with the fallback chain ---------------------------------
       - key: AI_PROVIDER
         value: gemini
